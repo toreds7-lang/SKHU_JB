@@ -1,0 +1,5 @@
+OPENAI_API_KEY=your-openai-api-key-here
+LLM_MODEL=gpt-4o-mini
+LLM_BASE_URL=
+EMBEDDING_BASE_URL=
+EMBEDDING_MODEL=text-embedding-ada-002
