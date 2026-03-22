@@ -1,0 +1,23 @@
+# API keys
+.env
+env.txt
+
+# Accidental pip log
+=3.7
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# PyInstaller
+dist/
+build/
+
+# RAG cache
+.rag_cache/
+
+# IDE
+.vscode/
+.idea/

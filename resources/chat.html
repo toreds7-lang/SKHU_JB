@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="js/marked.min.js"></script>
+<script src="js/highlight.min.js"></script>
+<style>
+/* ── Reset & Base ──────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0f14;
+  color: #e2e8f0;
+  font-family: "Pretendard","Malgun Gothic","Apple SD Gothic Neo","Noto Sans CJK KR",sans-serif;
+  font-size: 13px;
+  padding: 8px;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0d0f14; }
+::-webkit-scrollbar-thumb { background: #2a3045; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ── Message layout ────────────────────────────────────────── */
+.msg { margin: 6px 0; display: flex; }
+.msg-user { justify-content: flex-end; }
+.msg-ai   { justify-content: flex-start; }
+
+.bubble {
+  max-width: 70%;
+  padding: 10px 14px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.bubble-user {
+  background: linear-gradient(135deg, #1e3a5f, #1e2a4a);
+  border: 1px solid #1d4ed8;
+  border-radius: 12px 12px 4px 12px;
+  text-align: right;
+}
+.bubble-ai {
+  background: #1e2330;
+  border: 1px solid #2a3045;
+  border-radius: 4px 12px 12px 12px;
+}
+
+.msg-label {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+  font-family: "JetBrains Mono",Consolas,monospace;
+}
+.msg-user .msg-label { text-align: right; }
+
+/* ── Markdown content ──────────────────────────────────────── */
+.content p { margin: 0.4em 0; }
+.content pre {
+  background: #111827;
+  border-left: 3px solid #f97316;
+  border-radius: 0 4px 4px 0;
+  padding: 8px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0.5em 0;
+}
+.content pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: 11px;
+}
+.content code {
+  font-family: "JetBrains Mono",Consolas,monospace;
+}
+.content :not(pre) > code {
+  background: #0d1117;
+  color: #f97316;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.content table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.content th, .content td {
+  border: 1px solid #2a3045;
+  padding: 4px 8px;
+  font-size: 12px;
+  text-align: left;
+}
+.content th { background: #1e2330; color: #94a3b8; font-weight: 600; }
+.content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {
+  color: #60a5fa;
+  margin: 0.6em 0 0.3em;
+}
+.content h1 { font-size: 1.3em; }
+.content h2 { font-size: 1.15em; }
+.content h3 { font-size: 1.05em; }
+.content ul, .content ol { padding-left: 1.5em; margin: 0.3em 0; }
+.content li { margin: 0.15em 0; }
+.content hr { border: none; border-top: 1px solid #2a3045; margin: 0.6em 0; }
+.content blockquote {
+  border-left: 3px solid #a78bfa;
+  padding-left: 10px;
+  color: #94a3b8;
+  margin: 0.4em 0;
+}
+.content a { color: #60a5fa; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content strong { color: #f1f5f9; }
+.content img { max-width: 100%; border-radius: 4px; }
+
+/* ── Highlight.js dark theme (Atom One Dark inspired) ──────── */
+.hljs { color: #abb2bf; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c678dd; }
+.hljs-function .hljs-keyword { color: #c678dd; }
+.hljs-string, .hljs-addition { color: #98c379; }
+.hljs-number, .hljs-attr { color: #d19a66; }
+.hljs-comment, .hljs-quote, .hljs-deletion { color: #5c6370; font-style: italic; }
+.hljs-title, .hljs-title.function_ { color: #61afef; }
+.hljs-built_in, .hljs-type { color: #e5c07b; }
+.hljs-variable, .hljs-template-variable { color: #e06c75; }
+.hljs-name, .hljs-selector-id, .hljs-selector-class { color: #e06c75; }
+.hljs-meta { color: #61afef; }
+.hljs-params { color: #abb2bf; }
+.hljs-subst { color: #e06c75; }
+.hljs-regexp { color: #98c379; }
+.hljs-symbol { color: #56b6c2; }
+.hljs-doctag { color: #c678dd; }
+
+/* ── Streaming cursor (pure CSS animation) ─────────────────── */
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: #4f8ef7;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+</style>
+</head>
+<body>
+<div id="chat-container"></div>
+
+<script>
+// ── marked.js 설정 ────────────────────────────────────────────
+marked.setOptions({
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, { language: lang }).value; }
+      catch(e) {}
+    }
+    try { return hljs.highlightAuto(code).value; }
+    catch(e) {}
+    return code;
+  },
+  breaks: true,
+  gfm: true
+});
+
+const container = document.getElementById('chat-container');
+let currentAiBubble = null;   // 활성 스트리밍 AI 버블의 .content div
+let streamingBuffer = '';      // 스트리밍 중 누적된 마크다운 텍스트
+const MAX_MESSAGES = 50;       // 최대 표시 메시지 수
+
+// ── Utility ──────────────────────────────────────────────────
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function scrollToBottom() {
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function trimMessages() {
+  while (container.children.length > MAX_MESSAGES) {
+    container.removeChild(container.firstChild);
+  }
+}
+
+// ── Public API (Python에서 runJavaScript로 호출) ──────────────
+
+/** 사용자 메시지 버블 추가 */
+function appendUserMessage(text) {
+  const msg = document.createElement('div');
+  msg.className = 'msg msg-user';
+  msg.innerHTML =
+    '<div class="bubble bubble-user">' +
+      '<div class="msg-label">\uD83D\uDC64 사용자</div>' +
+      '<div class="content">' + escapeHtml(text) + '</div>' +
+    '</div>';
+  container.appendChild(msg);
+  trimMessages();
+  scrollToBottom();
+}
+
+/** 스트리밍 AI 메시지 시작 */
+function startAiMessage() {
+  streamingBuffer = '';
+  const msg = document.createElement('div');
+  msg.className = 'msg msg-ai';
+  msg.innerHTML =
+    '<div class="bubble bubble-ai">' +
+      '<div class="msg-label">\uD83E\uDD16 AI 튜터</div>' +
+      '<div class="content" id="streaming-content"><span class="cursor"></span></div>' +
+    '</div>';
+  container.appendChild(msg);
+  currentAiBubble = document.getElementById('streaming-content');
+  scrollToBottom();
+}
+
+/** 스트리밍 버퍼를 marked.js로 렌더링 + 커서 표시 */
+function renderStreamingBuffer() {
+  if (!currentAiBubble) return;
+  currentAiBubble.innerHTML = marked.parse(streamingBuffer) + '<span class="cursor"></span>';
+  currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
+    hljs.highlightElement(el);
+  });
+  scrollToBottom();
+}
+
+/** 스트리밍 완료 — 최종 렌더링 (커서 제거) */
+function finishAiMessage() {
+  if (!currentAiBubble) return;
+  currentAiBubble.innerHTML = marked.parse(streamingBuffer);
+  currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
+    hljs.highlightElement(el);
+  });
+  currentAiBubble.removeAttribute('id');
+  currentAiBubble = null;
+  streamingBuffer = '';
+  trimMessages();
+  scrollToBottom();
+}
+
+/** 히스토리 복원용 — 완성된 AI 메시지 추가 */
+function appendFinishedAiMessage(text) {
+  const msg = document.createElement('div');
+  msg.className = 'msg msg-ai';
+  const rendered = marked.parse(text);
+  msg.innerHTML =
+    '<div class="bubble bubble-ai">' +
+      '<div class="msg-label">\uD83E\uDD16 AI 튜터</div>' +
+      '<div class="content">' + rendered + '</div>' +
+    '</div>';
+  container.appendChild(msg);
+  msg.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
+    hljs.highlightElement(el);
+  });
+  trimMessages();
+  scrollToBottom();
+}
+
+/** 전체 채팅 초기화 */
+function clearChat() {
+  container.innerHTML = '';
+  currentAiBubble = null;
+  streamingBuffer = '';
+}
+
+/** 스트리밍 버퍼 리셋 (fallback 전환 시) */
+function resetStreamingBuffer() {
+  streamingBuffer = '';
+  if (currentAiBubble) {
+    currentAiBubble.innerHTML = '<span class="cursor"></span>';
+  }
+}
+</script>
+</body>
+</html>

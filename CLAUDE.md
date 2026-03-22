@@ -1,0 +1,168 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Running the Application
+
+> **중요**: 사용자는 PyQt6 데스크탑 앱(`python main.py`)을 사용합니다.
+> `notebook_rag_agent.py`(Streamlit)는 레거시이며 사용하지 않습니다.
+> **코드 수정 시 반드시 PyQt6 쪽 파일을 수정하세요.**
+
+```bash
+# Install dependencies (Python >= 3.10 required)
+pip install -r requirements_1.txt
+
+# Run the PyQt6 desktop app (기본 실행 방법)
+python main.py
+
+# (레거시, 미사용) Streamlit app
+# streamlit run notebook_rag_agent.py
+```
+
+No build, lint, or test commands are defined for this project.
+
+## Environment Configuration
+
+Copy `.env` (or `env.txt`) to set these variables before running:
+- `OPENAI_API_KEY` — Required for embeddings and LLM
+- `LLM_MODEL` — Default: `gpt-4o-mini`
+- `LLM_BASE_URL` — Leave empty for OpenAI; set for local servers (Ollama, etc.)
+- `EMBEDDING_BASE_URL` / `EMBEDDING_MODEL` — Override embedding endpoint/model
+
+`env_loader.py`가 `env.txt`를 읽어 환경변수에 로드합니다 (`main.py`에서 호출).
+
+## Architecture Overview
+
+이 프로젝트에는 두 가지 UI 구현이 있습니다:
+
+### 1. PyQt6 데스크탑 앱 (현재 사용 중) ← 모든 수정은 여기에
+
+진입점: `main.py` → `ui/main_window.py` (MainWindow)
+
+| 모듈 | 역할 |
+|------|------|
+| `main.py` | 앱 진입점 (QApplication, 다크 테마, 폰트 설정) |
+| `ui/main_window.py` | MainWindow — 탭/패널 조립, 워커 관리, `/f` 감지 |
+| `ui/config_panel.py` | 좌측 설정 패널 (LLM/임베딩 URL, 모델, RAG 빌드 버튼) |
+| `ui/chat_tab.py` | 채팅 탭 (스트리밍, Force Mode UI, 예시 질문 칩) |
+| `ui/docs_tab.py` | 문서 탐색 탭 |
+| `ui/graph_tab.py` | 그래프 탐색 탭 |
+| `ui/notebook_tab.py` | 노트북 뷰어 탭 |
+| `ui/dir_tab.py` | 디렉토리 트리 탭 |
+| `workers/llm_worker.py` | QThread 워커 (RagBuildWorker, LLMWorker, ForceWorker, ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker) |
+| `rag_core.py` | RAG 비즈니스 로직 (UI 무관) — 파싱, 인덱싱, 검색, Force Mode, 요약 함수 |
+| `env_loader.py` | env.txt 로더 |
+
+### 2. Streamlit 앱 (레거시, 미사용)
+
+`notebook_rag_agent.py` 단일 파일 (~1561줄). **수정하지 마세요.**
+
+### Retrieval Pipeline (LangGraph StateGraph)
+
+The core is a hybrid RAG pipeline with three parallel retrievers, orchestrated by LangGraph:
+
+1. **Vector RAG** — FAISS index with OpenAI embeddings; cached to `.rag_cache/faiss_index/`
+2. **BM25** — Keyword ranking via `rank-bm25`; cached to `.rag_cache/bm25.pkl`
+3. **Graph RAG** — Custom NetworkX DiGraph over notebook cells with two edge types:
+   - `sequential`: adjacent cells in the same notebook (decay 0.5)
+   - `shared_var`: code cells sharing assigned variable names (decay 0.8)
+   - Multi-hop propagation (2 hops) starting from vector-seeded nodes
+
+After retrieval, `merge_docs` deduplicates results (max 10 docs) and formats the context for the LLM.
+
+`AgentState` fields: `query`, `retrieval_mode`, `vector_docs`, `bm25_docs`, `graph_docs`, `all_docs`, `context`, `answer`, `steps`.
+
+### Indexing Unit
+
+Notebooks in `work/` are parsed cell-by-cell using `nbformat`. Each **cell** is the atomic retrieval unit (a LangChain `Document`). Metadata per document: `cell_idx`, `cell_type`, `notebook`, `notebook_path`, `source` (node ID).
+
+### RAG System Build & Caching
+
+PyQt6 앱에서는 `RagBuildWorker` (QThread)가 `rag_core.build_rag_system()`을 백그라운드에서 호출합니다:
+- Parses all `.ipynb` files from the configured notebook directory
+- Builds or loads FAISS/BM25 indexes from disk cache
+- Builds the NetworkX cell graph
+- Returns a dict with all components + stats
+
+File change detection uses MD5 hashing of `.ipynb` files + mtime (`get_dir_hash()`). `MainWindow._check_dir_hash()`가 30초 타이머로 감시하며 변경 감지 시 재구축을 안내합니다.
+
+### Korean Language Support
+
+`kiwipiepy` is used for morphological tokenization in BM25 and Graph RAG keyword boosting. If `kiwipiepy` is unavailable, the code falls back to regex-based tokenization.
+
+### Custom System Prompt
+
+Place a `system_prompt.txt` file in the project root to override the default LLM prompt. The default instructs the model to answer only from the retrieved notebook context and respond in Korean.
+
+### Force Mode (전수 검색)
+
+RAG 파이프라인과 완전히 분리된 순차 검색 모드. 채팅 입력에 `/f 질문` 형태로 사용.
+
+- **트리거**: `/f ` 접두어 (예: `/f 판다스 데이터프레임 병합`). 전각 슬래시(／), fraction slash(⁄) 등 자동 변환.
+- **동작**: 모든 `.ipynb` 파일을 5셀 단위 청크로 분할 → 각 청크를 LLM에게 보내 관련성 판단 → 관련 있는 결과만 채팅에 누적 표시
+- **시스템 프롬프트**: `force_prompt.txt` (별도 파일, `system_prompt.txt`와 독립)
+- **중지**: 진행 중 "⏹️ 중지" 버튼 클릭으로 즉시 중단 가능
+- **PyQt6 구현**:
+  - `rag_core.py`: `load_force_prompt()`, `prepare_force_chunks()`, `process_force_chunk()`, `format_force_results()`
+  - `workers/llm_worker.py`: `ForceWorker` QThread
+  - `ui/chat_tab.py`: Force Mode UI (QProgressBar + 중지 버튼)
+  - `ui/main_window.py`: `_detect_force_mode()` → ForceWorker 생성/관리
+- FAISS/BM25/Graph 인덱스 불필요 (LLM 설정만 필요)
+
+### Notebook Summary (노트북 요약)
+
+📓 노트북 뷰어 탭에 통합된 LLM 기반 요약 기능.
+
+- **UI**: 좌측 체크박스 노트북 목록 + 우측 셀/요약 전환 뷰 (QSplitter)
+- **동작**: 체크한 노트북들의 셀 내용을 LLM에 전송하여 한국어 요약 생성
+- **마크다운 렌더링**: 요약 카드에서 `QTextBrowser.setMarkdown()` + `defaultStyleSheet`로 마크다운 렌더링 (헤더, 볼드, 리스트, 코드 블록 등). 채팅 탭의 `marked.js` 방식과 별도로 Qt 네이티브 마크다운 렌더링 사용.
+- **시스템 프롬프트**: `summary_prompt.txt` (선택, 없으면 기본 프롬프트 사용)
+- **캐시**: 인메모리 — 앱 실행 중 이미 요약된 노트북은 재요청하지 않음
+- **중지**: 진행 중 "⏹️ 중지" 버튼으로 즉시 중단 가능
+- **PyQt6 구현**:
+  - `rag_core.py`: `load_summary_prompt()`, `prepare_notebook_summary_prompt()`
+  - `workers/llm_worker.py`: `SummaryWorker` QThread
+  - `ui/notebook_tab.py`: 체크박스 목록, 요약 생성 버튼, 프로그레스, 셀/요약 뷰 전환, `QTextBrowser` 마크다운 카드
+  - `ui/main_window.py`: `_on_summary_requested()` → SummaryWorker 생성/관리
+
+### RAG Parameter Configuration
+
+`config.txt` (project root, `KEY=VALUE` format) controls RAG pipeline parameters. The file is loaded once at startup via `_load_config()` into the `RAG_CONFIG` dict. If the file is missing, all parameters use built-in defaults.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `VECTOR_K` | 5 | Vector retriever top-k |
+| `BM25_K` | 5 | BM25 retriever top-k |
+| `GRAPH_K` | 5 | Graph RAG top-k |
+| `GRAPH_HOPS` | 2 | Multi-hop propagation depth |
+| `SEQ_DECAY` | 0.5 | Sequential edge decay |
+| `VAR_DECAY` | 0.8 | Shared variable edge decay |
+| `KEYWORD_BOOST` | 0.4 | Keyword score boost multiplier |
+| `SEED_COUNT` | 3 | Vector seed documents for Graph RAG |
+| `VECTOR_WEIGHT` | 0.6 | Ensemble vector weight |
+| `BM25_WEIGHT` | 0.4 | Ensemble BM25 weight |
+| `MAX_DOCS` | 10 | Max merged context documents |
+| `LLM_TEMPERATURE` | 0.2 | LLM response temperature |
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `main.py` | PyQt6 앱 진입점 |
+| `ui/main_window.py` | MainWindow (탭/패널 조립, 워커 관리) |
+| `ui/config_panel.py` | 좌측 설정 패널 |
+| `ui/chat_tab.py` | 채팅 탭 (스트리밍, Force Mode UI) |
+| `ui/docs_tab.py` | 문서 탐색 탭 |
+| `ui/graph_tab.py` | 그래프 탐색 탭 |
+| `ui/notebook_tab.py` | 노트북 뷰어 탭 |
+| `ui/dir_tab.py` | 디렉토리 트리 탭 |
+| `workers/llm_worker.py` | QThread 워커 (RAG빌드, LLM, Force, 예시질문, 후속쿼리) |
+| `rag_core.py` | RAG 비즈니스 로직 (UI 무관) |
+| `env_loader.py` | env.txt 환경변수 로더 |
+| `notebook_rag_agent.py` | **레거시** Streamlit 앱 (미사용, 수정 금지) |
+| `work/` | Lecture notebook directory (`.ipynb` files) |
+| `system_prompt.txt` | Optional custom LLM system prompt |
+| `force_prompt.txt` | Force Mode system prompt (관련성 판단용) |
+| `config.txt` | RAG pipeline parameter configuration |
+| `requirements_1.txt` | Python dependencies |
+| `.env` / `env.txt` | Environment variables (API keys, model config) |

@@ -1,0 +1,832 @@
+"""
+RAG Core 비즈니스 로직
+- 노트북 파싱, FAISS, BM25, Graph RAG, LangGraph Agent
+- UI 의존성 없음 (Streamlit 제거)
+"""
+
+import os
+import json
+import re
+import glob
+import hashlib
+import pickle
+import operator
+from pathlib import Path
+from typing import Any, TypedDict, Annotated, Optional
+
+import nbformat
+
+# ── LangChain / LangGraph ─────────────────────────────────────────────────────
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.retrievers import BM25Retriever
+from langchain_classic.retrievers import EnsembleRetriever
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
+
+# ── NetworkX (Graph RAG) ──────────────────────────────────────────────────────
+import networkx as nx
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 환경 설정 로더
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_env_txt(path: str = "env.txt") -> dict[str, str]:
+    """env.txt 파일에서 KEY=VALUE 형태의 설정을 읽어 os.environ에 반영."""
+    env_vars = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key, value = key.strip(), value.strip()
+                    env_vars[key] = value
+                    os.environ.setdefault(key, value)
+    return env_vars
+
+
+_load_env_txt("env.txt")
+
+
+# ── 한국어 형태소 분석 ────────────────────────────────────────────────────────
+try:
+    from kiwipiepy import Kiwi
+    _kiwi = Kiwi()
+
+    def korean_tokenize(text: str) -> list[str]:
+        """kiwipiepy 기반 한국어 형태소 분석 토크나이저."""
+        tokens = []
+        for token in _kiwi.tokenize(text):
+            form = token.form.strip()
+            if len(form) >= 2 or (len(form) == 1 and form.isalnum()):
+                tokens.append(form.lower())
+        return tokens
+
+except ImportError:
+    _kiwi = None
+
+    def korean_tokenize(text: str) -> list[str]:
+        """Fallback: 공백+정규식 기반 토크나이징."""
+        return [t.lower() for t in re.split(r"\W+", text) if t]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. 노트북 파싱
+# ─────────────────────────────────────────────────────────────────────────────
+
+def parse_notebook(path: str) -> list[dict]:
+    """노트북을 셀 단위로 파싱합니다."""
+    with open(path, "r", encoding="utf-8") as f:
+        nb = nbformat.read(f, as_version=4)
+
+    cells = []
+    for idx, cell in enumerate(nb.cells):
+        source = cell.source.strip()
+        if not source:
+            continue
+        cells.append({
+            "cell_idx": idx,
+            "cell_type": cell.cell_type,
+            "source": source,
+            "notebook": Path(path).stem,
+            "notebook_path": path,
+        })
+    return cells
+
+
+def load_notebooks(directory: str, progress_callback=None) -> list[dict]:
+    """디렉토리 내 모든 .ipynb 파일을 파싱합니다."""
+    notebooks = glob.glob(os.path.join(directory, "**", "*.ipynb"), recursive=True)
+    all_cells = []
+    for nb_path in notebooks:
+        if progress_callback:
+            progress_callback(f"파싱 중: {Path(nb_path).name}")
+        try:
+            cells = parse_notebook(nb_path)
+            all_cells.extend(cells)
+        except Exception as e:
+            print(f"파싱 실패: {nb_path} – {e}")
+    return all_cells
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. 셀 → LangChain Document 변환
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cells_to_documents(cells: list[dict]) -> list[Document]:
+    docs = []
+    for c in cells:
+        content = f"[{c['cell_type'].upper()} CELL]\n{c['source']}"
+        docs.append(Document(
+            page_content=content,
+            metadata={
+                "cell_idx":      c["cell_idx"],
+                "cell_type":     c["cell_type"],
+                "notebook":      c["notebook"],
+                "notebook_path": c["notebook_path"],
+                "source":        f"{c['notebook']}#cell{c['cell_idx']}",
+            }
+        ))
+    return docs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Cell-level Graph 구성
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_cell_graph(cells: list[dict]) -> nx.DiGraph:
+    """
+    노드: 각 셀
+    엣지:
+      - sequential : 같은 노트북 내 순서
+      - shared_var : 코드 셀 간 변수명 공유
+    """
+    G = nx.DiGraph()
+
+    for c in cells:
+        node_id = f"{c['notebook']}#cell{c['cell_idx']}"
+        G.add_node(node_id, source_text=c["source"], **c)
+
+    # Sequential edges
+    nb_groups: dict[str, list[dict]] = {}
+    for c in cells:
+        nb_groups.setdefault(c["notebook"], []).append(c)
+
+    for nb, nb_cells in nb_groups.items():
+        nb_cells_sorted = sorted(nb_cells, key=lambda x: x["cell_idx"])
+        for i in range(len(nb_cells_sorted) - 1):
+            src = f"{nb}#cell{nb_cells_sorted[i]['cell_idx']}"
+            tgt = f"{nb}#cell{nb_cells_sorted[i+1]['cell_idx']}"
+            G.add_edge(src, tgt, rel="sequential")
+
+    # Shared variable edges (코드 셀만)
+    code_cells = [c for c in cells if c["cell_type"] == "code"]
+    assign_re = re.compile(r"^([a-zA-Z_]\w*)\s*=", re.MULTILINE)
+
+    cell_vars: dict[str, set[str]] = {}
+    for c in code_cells:
+        node_id = f"{c['notebook']}#cell{c['cell_idx']}"
+        cell_vars[node_id] = set(assign_re.findall(c["source"]))
+
+    node_ids = list(cell_vars.keys())
+    for i, n1 in enumerate(node_ids):
+        for j, n2 in enumerate(node_ids):
+            if i >= j:
+                continue
+            shared = cell_vars[n1] & cell_vars[n2]
+            if shared:
+                G.add_edge(n1, n2, rel="shared_var",
+                           vars=",".join(list(shared)[:5]))
+
+    return G
+
+
+def graph_search(G: nx.DiGraph, docs: list[Document],
+                 query: str, vector_retriever,
+                 top_k: int = 5, hops: int = 2,
+                 seq_decay: float = 0.5, var_decay: float = 0.8) -> list[Document]:
+    """
+    Graph RAG (Vector seed + 키워드 보조 + multi-hop 전파):
+    1. Vector retriever로 의미론적 seed 노드 선정
+    2. 셀 내용 키워드 보조 점수 부여
+    3. 엣지 가중치 기반 multi-hop 점수 전파
+    """
+    doc_map = {d.metadata["source"]: d for d in docs}
+
+    # Step 1: Vector seed 선정
+    try:
+        seed_docs = vector_retriever.invoke(query)
+        scores: dict[str, float] = {
+            d.metadata["source"]: 1.0
+            for d in seed_docs[:3]
+            if d.metadata["source"] in G
+        }
+    except Exception:
+        scores = {}
+
+    # Step 1b: 키워드 보조 점수
+    stopwords = {"", "the", "a", "is", "in", "of", "for", "and", "or", "to",
+                 "이", "가", "를", "을", "은", "는", "의", "에", "도", "로",
+                 "으로", "에서", "과", "와", "하다", "있다", "되다"}
+    tokens = set(korean_tokenize(query)) - stopwords
+
+    if tokens:
+        for node_id, data in G.nodes(data=True):
+            cell_text = data.get("source_text", "").lower()
+            kw_score = sum(1 for t in tokens if t in cell_text)
+            if kw_score > 0:
+                boost = min(kw_score / len(tokens), 1.0) * 0.4
+                scores[node_id] = max(scores.get(node_id, 0), boost)
+
+    if not scores:
+        return []
+
+    # Step 2: 가중치 기반 multi-hop 점수 전파
+    for _ in range(hops):
+        new_scores = dict(scores)
+        for node, score in scores.items():
+            if node not in G:
+                continue
+            for neighbor in G.successors(node):
+                rel = G.get_edge_data(node, neighbor, default={}).get("rel", "")
+                weight = var_decay if rel == "shared_var" else seq_decay
+                new_scores[neighbor] = max(new_scores.get(neighbor, 0.0), score * weight)
+            for neighbor in G.predecessors(node):
+                rel = G.get_edge_data(neighbor, node, default={}).get("rel", "")
+                weight = var_decay if rel == "shared_var" else seq_decay
+                new_scores[neighbor] = max(new_scores.get(neighbor, 0.0), score * weight)
+        scores = new_scores
+
+    # Step 3: 점수 기준 상위 top_k 반환
+    ranked = sorted(scores.items(), key=lambda x: -x[1])
+    return [doc_map[nid] for nid, _ in ranked[:top_k] if nid in doc_map]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. RAG 시스템 초기화
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_rag_system(nb_dir: str, embedding_base_url: str,
+                     openai_api_key: str, cache_path: str,
+                     embedding_model: str = "text-embedding-ada-002",
+                     progress_callback=None):
+    """
+    RAG 시스템을 구축하여 반환합니다.
+    progress_callback: Optional[Callable[[str], None]] — 진행 상태 문자열 콜백
+    """
+    if progress_callback:
+        progress_callback("노트북 파싱 중…")
+
+    cells = load_notebooks(nb_dir, progress_callback)
+    if not cells:
+        return None
+
+    if progress_callback:
+        progress_callback("문서 변환 중…")
+    docs = cells_to_documents(cells)
+
+    # Embeddings
+    embedding_kwargs = {"api_key": openai_api_key, "model": embedding_model}
+    if embedding_base_url:
+        embedding_kwargs["base_url"] = embedding_base_url
+    embeddings = OpenAIEmbeddings(**embedding_kwargs)
+
+    # Vector Store (FAISS)
+    faiss_path = os.path.join(cache_path, "faiss_index")
+    if progress_callback:
+        progress_callback("FAISS 인덱스 구축 중…")
+    if os.path.exists(faiss_path):
+        vector_store = FAISS.load_local(faiss_path, embeddings,
+                                        allow_dangerous_deserialization=True)
+    else:
+        vector_store = FAISS.from_documents(docs, embeddings)
+        os.makedirs(cache_path, exist_ok=True)
+        vector_store.save_local(faiss_path)
+
+    vector_retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+
+    # BM25
+    bm25_path = os.path.join(cache_path, "bm25.pkl")
+    if progress_callback:
+        progress_callback("BM25 인덱스 구축 중…")
+    if os.path.exists(bm25_path):
+        with open(bm25_path, "rb") as f:
+            bm25_retriever = pickle.load(f)
+    else:
+        bm25_retriever = BM25Retriever.from_documents(
+            docs, preprocess_func=korean_tokenize
+        )
+        bm25_retriever.k = 5
+        with open(bm25_path, "wb") as f:
+            pickle.dump(bm25_retriever, f)
+
+    # Ensemble (Vector + BM25)
+    ensemble_retriever = EnsembleRetriever(
+        retrievers=[vector_retriever, bm25_retriever],
+        weights=[0.6, 0.4],
+    )
+
+    # Cell Graph
+    if progress_callback:
+        progress_callback("셀 그래프 구축 중…")
+    graph = build_cell_graph(cells)
+
+    if progress_callback:
+        progress_callback("완료!")
+
+    return {
+        "docs":               docs,
+        "cells":              cells,
+        "vector_retriever":   vector_retriever,
+        "bm25_retriever":     bm25_retriever,
+        "ensemble_retriever": ensemble_retriever,
+        "graph":              graph,
+        "nb_count":           len(set(c["notebook"] for c in cells)),
+        "cell_count":         len(cells),
+        "code_count":         sum(1 for c in cells if c["cell_type"] == "code"),
+        "md_count":           sum(1 for c in cells if c["cell_type"] == "markdown"),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. LangGraph Agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AgentState(TypedDict):
+    query:          str
+    retrieval_mode: str
+    vector_docs:    list[Document]
+    bm25_docs:      list[Document]
+    graph_docs:     list[Document]
+    all_docs:       list[Document]
+    context:        str
+    answer:         str
+    steps:          Annotated[list[str], operator.add]
+
+
+def make_agent(llm_base_url: str, llm_api_key: str, llm_model: str,
+               rag_sys: dict):
+    """LangGraph 에이전트를 생성합니다."""
+
+    llm = ChatOpenAI(
+        base_url=llm_base_url if llm_base_url else None,
+        api_key=llm_api_key or "dummy",
+        model=llm_model,
+        temperature=0.2,
+        streaming=True,
+    )
+
+    def vector_retrieve(state: AgentState) -> AgentState:
+        docs = rag_sys["vector_retriever"].invoke(state["query"])
+        return {**state, "vector_docs": docs,
+                "steps": ["✅ Vector RAG 검색 완료"]}
+
+    def bm25_retrieve(state: AgentState) -> AgentState:
+        docs = rag_sys["bm25_retriever"].invoke(state["query"])
+        return {**state, "bm25_docs": docs,
+                "steps": ["✅ BM25 키워드 검색 완료"]}
+
+    def graph_retrieve(state: AgentState) -> AgentState:
+        docs = graph_search(rag_sys["graph"], rag_sys["docs"],
+                            state["query"],
+                            vector_retriever=rag_sys["vector_retriever"],
+                            top_k=5)
+        return {**state, "graph_docs": docs,
+                "steps": ["✅ Graph RAG 검색 완료"]}
+
+    def merge_docs(state: AgentState) -> AgentState:
+        seen, merged = set(), []
+        for d in (state.get("vector_docs", []) +
+                  state.get("bm25_docs",   []) +
+                  state.get("graph_docs",  [])):
+            key = d.metadata.get("source", d.page_content[:60])
+            if key not in seen:
+                seen.add(key)
+                merged.append(d)
+
+        parts = []
+        for i, d in enumerate(merged[:10]):
+            nb    = d.metadata.get("notebook", "?")
+            cidx  = d.metadata.get("cell_idx", "?")
+            ctype = d.metadata.get("cell_type", "?")
+            parts.append(
+                f"[문서 {i+1}] 노트북: {nb}, 셀 #{cidx} ({ctype})\n"
+                f"{d.page_content}\n"
+            )
+        context = "\n---\n".join(parts)
+        return {**state, "all_docs": merged, "context": context,
+                "steps": ["✅ 문서 병합 완료"]}
+
+    _prompt_file = Path("system_prompt.txt")
+    if _prompt_file.exists():
+        SYSTEM_PROMPT = _prompt_file.read_text(encoding="utf-8").strip()
+    else:
+        SYSTEM_PROMPT = """당신은 Jupyter Notebook 강의 자료를 분석하는 친절한 AI 튜터입니다.
+반드시 주어진 컨텍스트(노트북 셀 내용)만을 근거로 답변하세요.
+
+답변 방식:
+- 처음 접하는 학습자도 이해할 수 있도록 최대한 쉽고 친근한 말투로 설명합니다.
+- 개념은 간단한 비유나 예시를 들어 직관적으로 이해할 수 있게 합니다.
+- 단계별로 나눠서 논리적인 흐름이 보이도록 자세히 설명합니다.
+- 중요한 용어나 핵심 개념은 별도로 강조해서 설명합니다.
+
+규칙:
+1. 컨텍스트에 있는 내용만 사용합니다. 컨텍스트 외부 지식은 절대 사용하지 마세요.
+2. 코드 셀이 있으면 해당 코드를 직접 인용하고, 각 줄이 무엇을 하는지 단계별로 상세히 설명합니다.
+3. 마크다운 셀이 있으면 개념 설명에 적극 활용합니다.
+4. 답변은 한국어로 작성합니다.
+5. 코드 예시는 ```python 블록으로 감쌉니다.
+6. 컨텍스트에 없는 내용은 절대 추측하지 말고 "제공된 노트북에서 해당 내용을 찾을 수 없습니다"라고 답변하세요."""
+
+    LLM_ONLY_PROMPT = """당신은 AI 튜터입니다. 이번 질문은 강의 노트북에서 관련 문서를 찾지 못했습니다.
+일반 AI 지식을 바탕으로 최선을 다해 답변하되, 반드시 첫 줄에 다음 문구를 포함하세요:
+"⚠️ 노트북에서 관련 내용을 찾지 못해 일반 지식으로 답변합니다."
+답변은 한국어로 작성하세요."""
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("vector_retrieve", vector_retrieve)
+    workflow.add_node("bm25_retrieve",   bm25_retrieve)
+    workflow.add_node("graph_retrieve",  graph_retrieve)
+    workflow.add_node("merge_docs",      merge_docs)
+
+    workflow.set_entry_point("vector_retrieve")
+    workflow.add_edge("vector_retrieve", "bm25_retrieve")
+    workflow.add_edge("bm25_retrieve",   "graph_retrieve")
+    workflow.add_edge("graph_retrieve",  "merge_docs")
+    workflow.add_edge("merge_docs",      END)
+
+    return workflow.compile(), llm, SYSTEM_PROMPT, LLM_ONLY_PROMPT
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. 유틸 함수
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_directory_tree(root: str, cell_count_map: dict[str, int] | None = None) -> dict:
+    """디렉토리 트리를 재귀적으로 구성합니다."""
+    root_path = Path(root)
+    if not root_path.exists():
+        return {}
+
+    def _build(path: Path) -> dict:
+        node = {"name": path.name, "type": "dir", "path": str(path), "children": []}
+        try:
+            items = sorted(path.iterdir(), key=lambda x: (x.is_file(), x.name.lower()))
+            for item in items:
+                if item.name.startswith(".") or item.name == "__pycache__":
+                    continue
+                if item.is_dir():
+                    node["children"].append(_build(item))
+                elif item.suffix.lower() == ".ipynb":
+                    cc = (cell_count_map or {}).get(str(item), None)
+                    node["children"].append({
+                        "name": item.name,
+                        "type": "notebook",
+                        "path": str(item),
+                        "cell_count": cc,
+                        "size": item.stat().st_size,
+                    })
+                else:
+                    node["children"].append({
+                        "name": item.name,
+                        "type": "file",
+                        "path": str(item),
+                        "ext":  item.suffix.lower(),
+                        "size": item.stat().st_size,
+                    })
+        except PermissionError:
+            pass
+        return node
+
+    return _build(root_path)
+
+
+def get_file_md5(filepath: str) -> str:
+    """개별 파일의 MD5 해시를 반환합니다."""
+    h = hashlib.md5()
+    try:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+    except Exception:
+        pass
+    return h.hexdigest()
+
+
+def get_dir_hash(nb_dir: str) -> str:
+    """노트북 디렉토리의 .ipynb 파일 목록과 수정 시각으로 해시를 생성합니다."""
+    h = hashlib.md5()
+    try:
+        files = sorted(Path(nb_dir).rglob("*.ipynb"))
+        for f in files:
+            h.update(f.name.encode())
+            h.update(str(f.stat().st_mtime).encode())
+    except Exception:
+        pass
+    return h.hexdigest()
+
+
+def format_cell_preview(doc: Document, max_len: int = 300) -> str:
+    text = doc.page_content
+    return text[:max_len] + ("…" if len(text) > max_len else "")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. 후속 질문 생성
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_example_questions(llm, docs: list, n: int = 4) -> list[str]:
+    """전체 문서에서 핵심 키워드를 추출한 뒤 예시 질문 n개를 생성합니다."""
+    total = len(docs)
+    if total <= 12:
+        sample = docs
+    else:
+        indices = [int(i * total / 12) for i in range(12)]
+        sample = [docs[i] for i in indices]
+
+    full_context = "\n\n".join(
+        f"[셀 {i+1}] {d.page_content[:400]}" for i, d in enumerate(sample)
+    )
+
+    prompt = f"""You are an educational AI helping learners study Jupyter notebooks.
+
+Below is a sample of notebook cells. Your task:
+1. Identify the 5 most important KEYWORDS or CONCEPTS in this notebook.
+2. Based on those keywords, generate exactly {n} short questions a learner would naturally ask.
+
+Notebook content:
+{full_context}
+
+Rules:
+- Questions must be grounded in the actual content and keywords of the notebook
+- Each question must be concise (under 15 words)
+- Write questions in Korean
+- Do NOT generate generic questions — each must reflect a specific concept from the notebook
+- Return ONLY a valid JSON object in this exact format:
+{{
+  "keywords": ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"],
+  "questions": ["질문1?", "질문2?", "질문3?", "질문4?"]
+}}
+
+JSON:"""
+
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        text = response.content.strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1:
+            parsed = json.loads(text[start:end+1])
+            questions = parsed.get("questions", [])
+            return [q for q in questions if isinstance(q, str)][:n]
+    except Exception:
+        pass
+    return []
+
+
+def generate_suggested_queries(llm, query: str, answer: str, n: int = 3) -> list[str]:
+    """현재 Q&A를 바탕으로 후속 쿼리 n개를 생성합니다."""
+    prompt = f"""You are an educational AI. A learner asked a question and received an answer.
+Generate {n} follow-up search queries the learner would naturally want to search next.
+
+Question: {query}
+Answer: {answer[:600]}
+
+Rules:
+- Queries must be short and searchable (under 12 words)
+- Each query should target a different concept from the answer
+- Match the language of the original question (Korean if Korean)
+- Return ONLY valid JSON:
+{{
+  "queries": ["쿼리1", "쿼리2", "쿼리3"]
+}}
+
+JSON:"""
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        text = response.content.strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1:
+            parsed = json.loads(text[start:end+1])
+            queries = parsed.get("queries", [])
+            return [q for q in queries if isinstance(q, str)][:n]
+    except Exception:
+        pass
+    return []
+
+
+def generate_followup_questions(llm, query: str, answer: str) -> list[str]:
+    """답변에서 핵심 개념을 파악하고 후속 질문 2~3개를 생성합니다."""
+    prompt = f"""You are an educational AI helping a learner study Jupyter notebooks.
+
+A learner asked a question and received an answer. Your task:
+1. Identify the most important CONCEPTS or TERMS in the answer that deserve deeper exploration.
+2. Generate 2-3 follow-up questions that target those key concepts.
+
+Question: {query}
+Answer: {answer[:800]}
+
+Rules:
+- Prioritize questions about concepts that are central, non-obvious, or commonly misunderstood
+- Do NOT ask questions already answered above
+- Each question must be concise (under 15 words)
+- Match the language of the original question (Korean if Korean)
+- Return ONLY a valid JSON object in this exact format:
+{{
+  "key_concepts": ["개념1", "개념2", "개념3"],
+  "questions": ["질문1?", "질문2?", "질문3?"]
+}}
+
+JSON:"""
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        text = response.content.strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1:
+            parsed = json.loads(text[start:end+1])
+            questions = parsed.get("questions", [])
+            return [q for q in questions if isinstance(q, str)][:3]
+    except Exception:
+        pass
+    return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Force Mode (전수 검색)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_force_prompt() -> str:
+    """force_prompt.txt에서 Force Mode 시스템 프롬프트를 로드합니다."""
+    _fp = Path("force_prompt.txt")
+    if _fp.exists():
+        return _fp.read_text(encoding="utf-8").strip()
+    return (
+        "당신은 Jupyter Notebook 강의 자료의 관련성을 판단하는 AI입니다.\n\n"
+        "사용자의 질문과 노트북 셀 내용(청크)이 주어집니다.\n\n"
+        "작업:\n"
+        "1. 이 청크가 사용자의 질문과 관련이 있는지 판단하세요.\n"
+        "2. 관련이 있다면 \"RELEVANT\"로 시작하고, 해당 내용을 바탕으로 답변/요약을 작성하세요.\n"
+        "3. 관련이 없다면 \"NOT_RELEVANT\"라고만 답변하세요.\n\n"
+        "규칙:\n"
+        "- 질문의 핵심 주제와 직접적으로 관련된 경우만 RELEVANT입니다.\n"
+        "- RELEVANT인 경우, 해당 청크의 내용만을 근거로 설명하세요.\n"
+        "- 코드 셀이 있으면 코드를 인용하고 설명하세요.\n"
+        "- 답변은 한국어로 작성합니다.\n"
+        "- 간결하되 핵심 내용을 빠짐없이 포함하세요."
+    )
+
+
+def prepare_force_chunks(nb_dir: str, chunk_size: int = 5) -> list[dict]:
+    """노트북 디렉토리의 모든 파일을 chunk_size셀씩 묶어 청크 리스트로 반환."""
+    notebooks = sorted(
+        glob.glob(os.path.join(nb_dir, "**", "*.ipynb"), recursive=True)
+    )
+    chunks = []
+    for nb_path in notebooks:
+        try:
+            cells = parse_notebook(nb_path)
+        except Exception:
+            continue
+        nb_name = Path(nb_path).stem
+
+        for i in range(0, len(cells), chunk_size):
+            group = cells[i:i + chunk_size]
+            cell_indices = [c["cell_idx"] for c in group]
+            if len(cell_indices) > 1:
+                cell_range = f"#{min(cell_indices)}-#{max(cell_indices)}"
+            else:
+                cell_range = f"#{cell_indices[0]}"
+
+            text_parts = []
+            for c in group:
+                text_parts.append(
+                    f"[{c['cell_type'].upper()} CELL #{c['cell_idx']}]\n{c['source']}"
+                )
+            chunk_text = "\n\n---\n\n".join(text_parts)
+
+            if len(chunk_text.strip()) < 50:
+                continue
+
+            chunks.append({
+                "notebook": nb_name,
+                "notebook_path": nb_path,
+                "cell_range": cell_range,
+                "text": chunk_text,
+            })
+    return chunks
+
+
+def process_force_chunk(llm, force_prompt: str, query: str, chunk: dict):
+    """단일 청크에 대해 LLM 관련성 판단. 관련 있으면 dict, 없으면 None."""
+    user_msg = (
+        f"질문: {query}\n\n"
+        f"노트북: {chunk['notebook']}\n"
+        f"셀 범위: {chunk['cell_range']}\n\n"
+        f"청크 내용:\n{chunk['text'][:4000]}"
+    )
+
+    response = llm.invoke([
+        SystemMessage(content=force_prompt),
+        HumanMessage(content=user_msg),
+    ])
+
+    answer = response.content.strip()
+
+    if answer.upper().startswith("NOT_RELEVANT"):
+        return None
+
+    if answer.upper().startswith("RELEVANT"):
+        answer = answer[len("RELEVANT"):].lstrip(":").lstrip()
+
+    return {
+        "notebook": chunk["notebook"],
+        "cell_range": chunk["cell_range"],
+        "summary": answer,
+    }
+
+
+def format_force_results(results: list[dict], progress: tuple,
+                         stopped: bool = False) -> str:
+    """Force Mode 결과를 마크다운 문자열로 포맷."""
+    processed, total = progress
+    parts = ["🔍 **Force Mode 검색 결과**\n"]
+
+    for r in results:
+        parts.append(
+            f"\n---\n📓 **{r['notebook']}** (셀 {r['cell_range']})\n\n"
+            f"{r['summary']}"
+        )
+
+    if not results:
+        parts.append("\n\n관련 문서를 찾지 못했습니다.")
+
+    if stopped:
+        parts.append(
+            f"\n\n---\n⏹️ 검색 중단됨: {processed}/{total}개 청크 검색 완료, "
+            f"{len(results)}개 관련 문서 발견"
+        )
+    else:
+        parts.append(
+            f"\n\n---\n✅ 검색 완료: {total}개 청크 중 "
+            f"{len(results)}개 관련 문서 발견"
+        )
+
+    return "\n".join(parts)
+
+
+# ── 노트북 요약 (Summary) ───────────────────────────────────────────────────
+
+
+def load_summary_prompt() -> str:
+    """summary_prompt.txt에서 요약 시스템 프롬프트를 로드합니다."""
+    _fp = Path("summary_prompt.txt")
+    if _fp.exists():
+        return _fp.read_text(encoding="utf-8").strip()
+    return (
+        "당신은 Jupyter Notebook 강의 자료를 분석하는 AI 요약 전문가입니다.\n\n"
+        "주어진 노트북의 전체 셀 내용을 바탕으로 핵심 요약을 작성합니다.\n\n"
+        "요약 방식:\n"
+        "- 노트북의 주제와 학습 목표를 먼저 파악합니다\n"
+        "- 다루는 핵심 개념과 기술을 목록으로 정리합니다\n"
+        "- 주요 코드 예제가 있으면 간략히 언급합니다\n"
+        "- 3~5개의 핵심 포인트로 구조화합니다\n\n"
+        "규칙:\n"
+        "1. 주어진 셀 내용만을 근거로 요약합니다\n"
+        "2. 답변은 한국어로 작성합니다\n"
+        "3. 마크다운 형식을 사용합니다\n"
+        "4. 200~400자 내외로 간결하게 작성합니다"
+    )
+
+
+def prepare_notebook_summary_prompt(
+    notebook_name: str, cells: list[dict], max_chars: int = 6000
+) -> str:
+    """노트북의 셀들을 요약용 프롬프트 문자열로 조합합니다."""
+    md_cells = [c for c in cells if c["cell_type"] == "markdown"]
+    code_cells = [c for c in cells if c["cell_type"] == "code"]
+
+    parts: list[str] = []
+    budget = max_chars
+
+    # 마크다운 셀 우선 포함
+    for c in md_cells:
+        src = c["source"]
+        if len(src) > 500:
+            src = src[:500] + "...(생략)"
+        entry = f"[MARKDOWN #{c['cell_idx']}]\n{src}\n"
+        if budget - len(entry) < 0:
+            break
+        parts.append(entry)
+        budget -= len(entry)
+
+    # 코드 셀: 앞쪽 + 뒤쪽 우선
+    if code_cells and budget > 200:
+        half = max(len(code_cells) // 2, 1)
+        priority = code_cells[:half] + code_cells[-half:]
+        seen = set()
+        for c in priority:
+            if c["cell_idx"] in seen:
+                continue
+            seen.add(c["cell_idx"])
+            src = c["source"]
+            if len(src) > 500:
+                src = src[:500] + "...(생략)"
+            entry = f"[CODE #{c['cell_idx']}]\n{src}\n"
+            if budget - len(entry) < 0:
+                break
+            parts.append(entry)
+            budget -= len(entry)
+
+    cell_text = "\n".join(parts)
+    return (
+        f"노트북: {notebook_name}\n"
+        f"총 셀 수: {len(cells)}개 (코드: {len(code_cells)}, "
+        f"마크다운: {len(md_cells)})\n\n"
+        f"--- 셀 내용 ---\n{cell_text}\n\n"
+        f"위 노트북의 내용을 분석하여 핵심 요약을 작성해 주세요."
+    )
