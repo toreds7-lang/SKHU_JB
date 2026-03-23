@@ -75,6 +75,10 @@ class LLMWorker(QThread):
         self.query            = query
         self.retrieval_mode   = retrieval_mode
         self.is_suggested     = is_suggested
+        self._stopped         = False
+
+    def stop(self):
+        self._stopped = True
 
     def run(self):
         try:
@@ -92,6 +96,10 @@ class LLMWorker(QThread):
                 "steps":          [],
             })
 
+            if self._stopped:
+                self.finished_signal.emit("", result)
+                return
+
             context_found = len(result.get("all_docs", [])) > 0
             rag_not_found = lambda a: any(kw in a for kw in [
                 "찾을 수 없습니다", "찾지 못했습니다", "찾을수 없습니다",
@@ -104,6 +112,8 @@ class LLMWorker(QThread):
             def stream_messages(messages) -> str:
                 buf = ""
                 for chunk in self.llm.stream(messages):
+                    if self._stopped:
+                        break
                     buf += chunk.content
                     self.chunk_received.emit(chunk.content)
                 return buf

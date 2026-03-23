@@ -176,8 +176,15 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function scrollToBottom() {
-  window.scrollTo(0, document.body.scrollHeight);
+function isNearBottom(threshold) {
+  threshold = threshold || 50;
+  return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - threshold);
+}
+
+function scrollToBottom(force) {
+  if (force || isNearBottom()) {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
 }
 
 function trimMessages() {
@@ -199,7 +206,7 @@ function appendUserMessage(text) {
     '</div>';
   container.appendChild(msg);
   trimMessages();
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 /** 스트리밍 AI 메시지 시작 */
@@ -214,7 +221,7 @@ function startAiMessage() {
     '</div>';
   container.appendChild(msg);
   currentAiBubble = document.getElementById('streaming-content');
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 /** 스트리밍 버퍼를 marked.js로 렌더링 + 커서 표시 */
@@ -256,7 +263,7 @@ function appendFinishedAiMessage(text) {
     hljs.highlightElement(el);
   });
   trimMessages();
-  scrollToBottom();
+  scrollToBottom(true);
 }
 
 /** 전체 채팅 초기화 */

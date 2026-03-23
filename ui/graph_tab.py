@@ -6,7 +6,7 @@ Streamlit Tab3 대체
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QTextBrowser, QTableWidget,
-    QTableWidgetItem, QSplitter, QGroupBox, QHeaderView
+    QTableWidgetItem, QSplitter, QGroupBox, QHeaderView, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 
@@ -24,6 +24,7 @@ class GraphTab(QWidget):
 
         title = QLabel("🕸️  셀 관계 그래프")
         title.setStyleSheet("color: #e2e8f0; font-size: 14px; font-weight: 700;")
+        title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(title)
 
         # 수평 스플리터: 좌(통계+노드) | 우(엣지 테이블)
@@ -79,7 +80,11 @@ class GraphTab(QWidget):
             "border-radius: 6px; color: #e2e8f0; font-size: 12px; padding: 6px; }"
         )
         self.neighbor_display.setPlaceholderText("노드를 선택하면 이웃 정보가 표시됩니다.")
+        self.neighbor_display.setMaximumHeight(120)
         left_layout.addWidget(self.neighbor_display)
+
+        # 남은 공간을 아래로 밀어 콘텐츠를 상단에 고정
+        left_layout.addStretch(1)
 
         splitter.addWidget(left_panel)
 
@@ -113,7 +118,7 @@ class GraphTab(QWidget):
         splitter.addWidget(right_panel)
 
         splitter.setSizes([350, 600])
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)
 
     # ── 공개 API ───────────────────────────────────────────────────────────────
 

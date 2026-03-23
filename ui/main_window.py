@@ -122,6 +122,7 @@ class MainWindow(QMainWindow):
         self.config_panel.build_requested.connect(self._on_build_rag)
         self.chat_tab.query_submitted.connect(self._on_query)
         self.chat_tab.force_stop_requested.connect(self._on_force_stop)
+        self.chat_tab.llm_stop_requested.connect(self._on_llm_stop)
         self.notebook_tab.summary_requested.connect(self._on_summary_requested)
         self.notebook_tab.stop_requested.connect(self._on_summary_stop)
 
@@ -283,6 +284,10 @@ class MainWindow(QMainWindow):
     def _on_force_stop(self):
         if self._force_worker and self._force_worker.isRunning():
             self._force_worker.stop()
+
+    def _on_llm_stop(self):
+        if self._llm_worker and self._llm_worker.isRunning():
+            self._llm_worker.stop()
 
     def _on_llm_finished(self, answer: str, result: dict):
         self.chat_tab.on_streaming_finished(answer, result)

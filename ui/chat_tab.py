@@ -52,6 +52,7 @@ def _doc_card(doc, tag_class: str, tag_name: str) -> str:
 class ChatTab(QWidget):
     query_submitted = pyqtSignal(str, bool)   # (query, is_suggested)
     force_stop_requested = pyqtSignal()       # Force Mode 중지 요청
+    llm_stop_requested = pyqtSignal()         # 일반 모드 스트리밍 중지 요청
 
     def __init__(self):
         super().__init__()
@@ -242,7 +243,13 @@ class ChatTab(QWidget):
         self._is_streaming  = True
         self._run_js("startAiMessage()")
         self.input_edit.setEnabled(False)
-        self.send_btn.setEnabled(False)
+        self.send_btn.setText("⏹")
+        self.send_btn.setStyleSheet(
+            "QPushButton { background: #dc2626; color: white; border: none; "
+            "border-radius: 4px; font-size: 14px; font-weight: 600; }"
+            "QPushButton:hover { background: #ef4444; }"
+        )
+        self.send_btn.setEnabled(True)
         self.sources_group.setVisible(False)
 
     def on_chunk_received(self, chunk: str):
@@ -269,9 +276,15 @@ class ChatTab(QWidget):
         self._run_js(f"streamingBuffer=`{escaped}`;finishAiMessage()")
         self._render_sources(result)
         self.input_edit.setEnabled(True)
-        self.send_btn.setEnabled(True)
+        self._restore_send_btn()
         self.status_label.setText("")
         self.example_bar.setVisible(False)
+
+    def _restore_send_btn(self):
+        """전송 버튼을 원래 상태로 복원"""
+        self.send_btn.setText("전송")
+        self.send_btn.setStyleSheet("")
+        self.send_btn.setEnabled(True)
 
     # ── Force Mode API ────────────────────────────────────────────────────────
 
@@ -380,6 +393,9 @@ class ChatTab(QWidget):
     # ── 내부 메서드 ────────────────────────────────────────────────────────────
 
     def _on_send(self):
+        if self._is_streaming:
+            self.llm_stop_requested.emit()
+            return
         query = self.input_edit.text().strip()
         if not query:
             return
