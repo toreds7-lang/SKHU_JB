@@ -32,3 +32,7 @@ BM25_WEIGHT=0.4
 MAX_DOCS=10
 # LLM 응답 temperature (낮을수록 결정적)
 LLM_TEMPERATURE=0.2
+
+# ── Debug / Trace ───────────────────────────────────────────
+# true로 설정하면 각 쿼리마다 retriever별 검색 결과를 trace_logs/ 폴더에 저장
+TRACE_DEBUG=false

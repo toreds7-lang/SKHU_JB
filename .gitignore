@@ -18,6 +18,9 @@ build/
 # RAG cache
 .rag_cache/
 
+# Trace debug logs
+trace_logs/
+
 # IDE
 .vscode/
 .idea/

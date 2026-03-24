@@ -54,6 +54,33 @@ def _load_env_txt(path: str = "env.txt") -> dict[str, str]:
 _load_env_txt("env.txt")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# RAG 파라미터 설정 로더 (config.txt)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_config(path: str = "config.txt") -> dict[str, str]:
+    """config.txt에서 KEY=VALUE 형태의 RAG 파라미터를 읽어 dict로 반환."""
+    cfg: dict[str, str] = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    cfg[key.strip()] = value.strip()
+    return cfg
+
+
+RAG_CONFIG = _load_config()
+
+
+def _is_trace_debug() -> bool:
+    """TRACE_DEBUG 설정이 true인지 확인."""
+    return RAG_CONFIG.get("TRACE_DEBUG", "false").lower() == "true"
+
+
 # ── 한국어 형태소 분석 ────────────────────────────────────────────────────────
 try:
     from kiwipiepy import Kiwi
@@ -335,6 +362,57 @@ def build_rag_system(nb_dir: str, embedding_base_url: str,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Trace Debug 로깅
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _format_docs_section(title: str, docs: list) -> str:
+    """retriever 결과를 텍스트 섹션으로 포맷."""
+    lines = [f"[{title}] ({len(docs)} docs)"]
+    lines.append("-" * 40)
+    for i, d in enumerate(docs):
+        nb    = d.metadata.get("notebook", "?")
+        cidx  = d.metadata.get("cell_idx", "?")
+        ctype = d.metadata.get("cell_type", "?")
+        lines.append(f"[{i+1}] notebook: {nb}, cell #{cidx} ({ctype})")
+        lines.append(d.page_content)
+        lines.append("---")
+    if not docs:
+        lines.append("(없음)")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_trace_log(query: str, vector_docs: list, bm25_docs: list,
+                     graph_docs: list, merged_docs: list) -> None:
+    """TRACE_DEBUG가 true일 때 retriever별 검색 결과를 파일로 저장."""
+    if not _is_trace_debug():
+        return
+
+    from datetime import datetime
+
+    trace_dir = Path("trace_logs")
+    trace_dir.mkdir(exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 파일명용 쿼리 축약 (특수문자 제거, 30자 제한)
+    safe_q = re.sub(r'[\\/:*?"<>|\s]+', '_', query)[:30].strip('_')
+    filename = trace_dir / f"{ts}_{safe_q}.txt"
+
+    dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    sections = [
+        f"Query: {query}",
+        f"Time: {dt_str}",
+        "=" * 40,
+        "",
+        _format_docs_section("Vector RAG", vector_docs),
+        _format_docs_section("BM25", bm25_docs),
+        _format_docs_section("Graph RAG", graph_docs),
+        _format_docs_section("Merged", merged_docs),
+    ]
+    filename.write_text("\n".join(sections), encoding="utf-8")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. LangGraph Agent
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -400,6 +478,15 @@ def make_agent(llm_base_url: str, llm_api_key: str, llm_model: str,
                 f"{d.page_content}\n"
             )
         context = "\n---\n".join(parts)
+
+        _write_trace_log(
+            query=state["query"],
+            vector_docs=state.get("vector_docs", []),
+            bm25_docs=state.get("bm25_docs", []),
+            graph_docs=state.get("graph_docs", []),
+            merged_docs=merged[:10],
+        )
+
         return {**state, "all_docs": merged, "context": context,
                 "steps": ["✅ 문서 병합 완료"]}
 
