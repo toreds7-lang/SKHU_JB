@@ -11,7 +11,18 @@ from PyQt6.QtWidgets import (
     QFrame, QSizePolicy, QApplication, QProgressBar
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
+from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+
+class _ExternalLinkPage(QWebEnginePage):
+    """링크 클릭 시 시스템 기본 브라우저로 열기"""
+    def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            QDesktopServices.openUrl(url)
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
 
 # ── 출처 카드 (sources_display용, QTextBrowser에서 계속 사용) ─────────────────
@@ -113,6 +124,7 @@ class ChatTab(QWidget):
 
         # ── 채팅 히스토리 (QWebEngineView) ────────────────────────────────────
         self.chat_display = QWebEngineView()
+        self.chat_display.setPage(_ExternalLinkPage(self.chat_display))
         self.chat_display.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         if getattr(sys, "frozen", False):
             _base = Path(sys._MEIPASS)
