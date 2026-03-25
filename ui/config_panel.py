@@ -7,7 +7,7 @@ import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QGroupBox, QFileDialog, QScrollArea,
-    QFrame, QSizePolicy, QProgressBar
+    QFrame, QSizePolicy, QProgressBar, QSpinBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QSettings
 from PyQt6.QtGui import QFont
@@ -154,6 +154,17 @@ class ConfigPanel(QWidget):
         self.retrieval_combo.addItem("🕸️ Graph RAG만", "graph")
         lay.addWidget(self.retrieval_combo)
 
+        # ── Force Mode 설정 ─────────────────────────────────────────────────
+        lay.addWidget(_SectionLabel("⚡  Force Mode"))
+        lay.addWidget(_FieldLabel("병렬 워커 수"))
+        self.force_workers_spin = QSpinBox()
+        self.force_workers_spin.setRange(1, 10)
+        self.force_workers_spin.setValue(3)
+        self.force_workers_spin.setToolTip(
+            "Force Mode에서 동시에 LLM을 호출하는 병렬 스레드 수 (1-10)"
+        )
+        lay.addWidget(self.force_workers_spin)
+
         # ── 캐시 디렉토리 ─────────────────────────────────────────────────────
         lay.addWidget(_FieldLabel("캐시 디렉토리"))
         self.cache_dir_edit = QLineEdit(".rag_cache")
@@ -254,6 +265,7 @@ class ConfigPanel(QWidget):
             "emb_api_key":   self.emb_key_edit.text().strip(),
             "retrieval_mode": self.retrieval_combo.currentData(),
             "cache_dir":     self.cache_dir_edit.text().strip() or ".rag_cache",
+            "force_workers": self.force_workers_spin.value(),
         }
 
     def set_build_enabled(self, enabled: bool):
@@ -298,6 +310,9 @@ class ConfigPanel(QWidget):
         idx = self.retrieval_combo.findData(mode)
         if idx >= 0:
             self.retrieval_combo.setCurrentIndex(idx)
+        # Force Mode 병렬 워커 수 (QSettings → env.txt → 기본값 3)
+        fw_default = int(os.getenv("FORCE_WORKERS", "3"))
+        self.force_workers_spin.setValue(int(s.value("force_workers", fw_default)))
         # API 키는 env에서만 로드 (저장 안 함)
         self.llm_key_edit.setText(os.getenv("OPENAI_API_KEY", ""))
         self.emb_key_edit.setText(os.getenv("OPENAI_API_KEY", ""))
@@ -311,3 +326,4 @@ class ConfigPanel(QWidget):
         s.setValue("emb_model",      self.emb_model_edit.text())
         s.setValue("cache_dir",      self.cache_dir_edit.text())
         s.setValue("retrieval_mode", self.retrieval_combo.currentData())
+        s.setValue("force_workers",  self.force_workers_spin.value())

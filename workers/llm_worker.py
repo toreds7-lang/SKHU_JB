@@ -9,6 +9,8 @@ QThread 기반 LLM / RAG 워커
 
 import os
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -170,19 +172,20 @@ class LLMWorker(QThread):
 
 
 class ForceWorker(QThread):
-    """Force Mode: 전수 검색 (모든 청크를 LLM에게 관련성 판단)"""
+    """Force Mode: 전수 검색 (N개 병렬 sub-worker로 LLM 관련성 판단)"""
     progress_signal  = pyqtSignal(int, int)      # (processed, total)
     result_signal    = pyqtSignal(dict)           # 관련 청크 발견 시
     preview_signal   = pyqtSignal(str)            # 누적 결과 미리보기 마크다운
     finished_signal  = pyqtSignal(str)            # 최종 포맷된 답변
     error_signal     = pyqtSignal(str)
 
-    def __init__(self, llm, query: str, nb_dir: str):
+    def __init__(self, llm, query: str, nb_dir: str, max_workers: int = 3):
         super().__init__()
-        self.llm     = llm
-        self.query   = query
-        self.nb_dir  = nb_dir
-        self._stopped = False
+        self.llm         = llm
+        self.query       = query
+        self.nb_dir      = nb_dir
+        self.max_workers = max(1, min(max_workers, 10))
+        self._stopped    = False
 
     def stop(self):
         self._stopped = True
@@ -205,32 +208,55 @@ class ForceWorker(QThread):
 
             total = len(chunks)
             results = []
+            processed_count = 0
+            lock = threading.Lock()
 
-            for i, chunk in enumerate(chunks):
+            def _process(chunk):
+                """Sub-worker: plain thread 내에서 단일 청크 처리."""
                 if self._stopped:
-                    answer = format_force_results(
-                        results, (i, total), stopped=True
-                    )
-                    self.finished_signal.emit(answer)
-                    return
-
+                    return None
                 try:
-                    result = process_force_chunk(
+                    return process_force_chunk(
                         self.llm, force_prompt, self.query, chunk
                     )
-                    if result is not None:
-                        results.append(result)
-                        self.result_signal.emit(result)
                 except Exception:
-                    pass  # 실패한 청크는 건너뜀
+                    return None  # 실패한 청크는 건너뜀
 
-                self.progress_signal.emit(i + 1, total)
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(_process, chunk): chunk
+                    for chunk in chunks
+                }
 
-                # 누적 결과 미리보기
-                preview = format_force_results(
-                    results, (i + 1, total), stopped=False
-                )
-                self.preview_signal.emit(preview)
+                for future in as_completed(futures):
+                    if self._stopped:
+                        for f in futures:
+                            f.cancel()
+                        answer = format_force_results(
+                            results, (processed_count, total), stopped=True
+                        )
+                        self.finished_signal.emit(answer)
+                        return
+
+                    result = future.result()
+
+                    with lock:
+                        processed_count += 1
+                        if result is not None:
+                            results.append(result)
+                            self.result_signal.emit(result)
+
+                    self.progress_signal.emit(processed_count, total)
+
+                    # 관련 결과 발견 시 또는 일정 간격마다 미리보기 갱신
+                    if (result is not None
+                            or processed_count % self.max_workers == 0
+                            or processed_count == total):
+                        preview = format_force_results(
+                            list(results), (processed_count, total),
+                            stopped=False,
+                        )
+                        self.preview_signal.emit(preview)
 
             answer = format_force_results(
                 results, (total, total), stopped=False

@@ -71,6 +71,7 @@ LLM_MODEL=gpt-4o-mini
 LLM_BASE_URL=
 EMBEDDING_BASE_URL=
 EMBEDDING_MODEL=text-embedding-ada-002
+FORCE_WORKERS=3
 ```
 
 ## 6. build.spec 주요 설정

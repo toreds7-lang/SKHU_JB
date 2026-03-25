@@ -23,8 +23,8 @@ User Query
 
 User Query "/f ..."
     │
-    └─► Force Mode  (전수 검색)
-         모든 .ipynb → 5셀 청크 분할 → LLM 관련성 판단
+    └─► Force Mode  (전수 검색, 병렬)
+         모든 .ipynb → 5셀 청크 분할 → N개 병렬 워커가 LLM 관련성 판단
               │
          관련 청크만 누적 출력 + 출처 표시
 ```
@@ -41,7 +41,7 @@ User Query "/f ..."
 | **BM25** | TF-IDF 기반 키워드 랭킹 | 정확한 용어 매칭, 짧은 셀에 유리 |
 | **Graph RAG** | NetworkX DiGraph + 멀티홉 점수 전파 | 셀 간 관계 추적, 관련 셀 확장 검색 |
 | **Hybrid** | EnsembleRetriever (Vector 60% + BM25 40%) | 두 방식의 장점 결합 |
-| **Force Mode** | LLM 순차 판단 | 모든 노트북 전수 검색, `/f` 접두어로 활성화 |
+| **Force Mode** | LLM 병렬 판단 (N개 워커) | 모든 노트북 전수 검색, `/f` 접두어로 활성화 |
 
 ### Graph RAG 상세
 
@@ -94,6 +94,7 @@ LLM_BASE_URL=http://localhost:8000/v1
 LLM_MODEL=gpt-4o-mini
 EMBEDDING_BASE_URL=
 EMBEDDING_MODEL=text-embedding-ada-002
+FORCE_WORKERS=3
 ```
 
 > `LLM_BASE_URL`을 비워두면 OpenAI 공식 API를 사용합니다.
@@ -153,6 +154,7 @@ pyinstaller build.spec
 | Embedding 모델명 | 임베딩 모델 | `text-embedding-ada-002` |
 | OpenAI API Key | OpenAI 인증 키 | `sk-...` |
 | 검색 모드 | 검색 전략 선택 | `all` / `vector` / `bm25` / `graph` |
+| Force Mode 병렬 워커 수 | 동시 LLM 호출 스레드 수 (1-10) | `3` |
 | 캐시 디렉토리 | 인덱스 저장 경로 | `.rag_cache` |
 
 ---

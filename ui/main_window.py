@@ -241,10 +241,12 @@ class MainWindow(QMainWindow):
 
             self.chat_tab.start_force_mode(actual_query)
 
+            force_workers = self.config_panel.get_config().get("force_workers", 3)
             self._force_worker = ForceWorker(
-                llm    = self.state.llm,
-                query  = actual_query,
-                nb_dir = nb_dir,
+                llm         = self.state.llm,
+                query       = actual_query,
+                nb_dir      = nb_dir,
+                max_workers = force_workers,
             )
             self._force_worker.progress_signal.connect(self.chat_tab.update_force_progress)
             self._force_worker.preview_signal.connect(self.chat_tab.update_force_preview)
