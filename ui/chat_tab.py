@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QTextBrowser, QScrollArea, QGroupBox,
     QFrame, QSizePolicy, QApplication, QProgressBar
 )
@@ -14,6 +14,39 @@ from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+
+
+class _AutoExpandingEdit(QPlainTextEdit):
+    """ChatGPT-style input: grows vertically up to max height, Enter sends."""
+    returnPressed = pyqtSignal()
+
+    _MIN_HEIGHT = 36
+    _MAX_HEIGHT = 160  # ~5 lines
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText("질문을 입력하세요…")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._MIN_HEIGHT)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.document().contentsChanged.connect(self._adjust_height)
+
+    def _adjust_height(self):
+        doc_height = int(self.document().size().height())
+        margins = self.contentsMargins()
+        new_h = doc_height + margins.top() + margins.bottom() + 4
+        new_h = max(self._MIN_HEIGHT, min(new_h, self._MAX_HEIGHT))
+        self.setFixedHeight(new_h)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(event)  # Shift+Enter → newline
+            else:
+                self.returnPressed.emit()
+        else:
+            super().keyPressEvent(event)
 
 
 class _ExternalLinkPage(QWebEnginePage):
@@ -228,9 +261,7 @@ class ChatTab(QWidget):
 
         # ── 입력 행 (항상 하단 고정) ───────────────────────────────────────────
         input_row = QHBoxLayout()
-        self.input_edit = QLineEdit()
-        self.input_edit.setPlaceholderText("질문을 입력하세요…")
-        self.input_edit.setMinimumHeight(36)
+        self.input_edit = _AutoExpandingEdit()
         self.input_edit.returnPressed.connect(self._on_send)
         self.send_btn = QPushButton("전송")
         self.send_btn.setMinimumHeight(36)
@@ -241,6 +272,7 @@ class ChatTab(QWidget):
         self.clear_btn.setFixedWidth(40)
         self.clear_btn.setToolTip("대화 초기화")
         self.clear_btn.clicked.connect(self.clear_chat)
+        input_row.setAlignment(Qt.AlignmentFlag.AlignBottom)
         input_row.addWidget(self.input_edit)
         input_row.addWidget(self.send_btn)
         input_row.addWidget(self.clear_btn)
@@ -408,7 +440,7 @@ class ChatTab(QWidget):
         if self._is_streaming:
             self.llm_stop_requested.emit()
             return
-        query = self.input_edit.text().strip()
+        query = self.input_edit.toPlainText().strip()
         if not query:
             return
         self.input_edit.clear()
