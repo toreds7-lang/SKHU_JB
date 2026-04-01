@@ -14,8 +14,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QSplitter, QStackedWidget, QCheckBox,
     QTextBrowser
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal
+from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut
 
 
 class CellWidget(QFrame):
@@ -103,6 +103,8 @@ class NotebookTab(QWidget):
         self._summaries: dict[str, str] = {}   # in-memory cache
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
+        self._summary_font_size = 12
+        self._tb_viewports: set = set()
         self._build_ui()
 
     def _build_ui(self):
@@ -252,6 +254,41 @@ class NotebookTab(QWidget):
 
         splitter.setSizes([220, 780])
         layout.addWidget(splitter, 1)
+
+        # 요약 보기 글자 크기 단축키
+        QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self._zoom_in)
+        QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self._zoom_in)
+        QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self._zoom_out)
+        QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self._zoom_reset)
+        self.summary_scroll.viewport().installEventFilter(self)
+
+    # ── 줌 (요약 보기 글자 크기) ─────────────────────────────────────────────
+
+    def _zoom_in(self):
+        if self._summary_font_size < 24:
+            self._summary_font_size += 1
+            self._rebuild_summary_view()
+
+    def _zoom_out(self):
+        if self._summary_font_size > 8:
+            self._summary_font_size -= 1
+            self._rebuild_summary_view()
+
+    def _zoom_reset(self):
+        self._summary_font_size = 12
+        self._rebuild_summary_view()
+
+    def eventFilter(self, obj, event):
+        if ((obj is self.summary_scroll.viewport() or obj in self._tb_viewports)
+                and event.type() == QEvent.Type.Wheel):
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                delta = event.angleDelta().y()
+                if delta > 0:
+                    self._zoom_in()
+                elif delta < 0:
+                    self._zoom_out()
+                return True
+        return super().eventFilter(obj, event)
 
     # ── 뷰 전환 ──────────────────────────────────────────────────────────────
 
@@ -512,6 +549,7 @@ class NotebookTab(QWidget):
 
     def _rebuild_summary_view(self):
         """체크된 노트북의 캐시된 요약을 요약 뷰에 표시"""
+        self._tb_viewports.clear()
         # 기존 위젯 제거
         while self._summary_layout.count() > 0:
             item = self._summary_layout.takeAt(0)
@@ -564,9 +602,11 @@ class NotebookTab(QWidget):
 
         # 요약 내용 (마크다운 렌더링)
         content = QTextBrowser()
+        content.viewport().installEventFilter(self)
+        self._tb_viewports.add(content.viewport())
         content.setOpenExternalLinks(True)
         content.setStyleSheet(
-            "QTextBrowser { color: #cbd5e1; font-size: 12px; "
+            f"QTextBrowser {{ color: #cbd5e1; font-size: {self._summary_font_size}px; "
             "border: none; background: transparent; }"
         )
         doc = content.document()

@@ -17,11 +17,12 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 
 class _AutoExpandingEdit(QPlainTextEdit):
-    """ChatGPT-style input: grows vertically up to max height, Enter sends."""
+    """ChatGPT-style input: grows vertically up to 4 lines, Enter sends."""
     returnPressed = pyqtSignal()
 
+    # Fallbacks used before the widget is shown; overwritten in showEvent
     _MIN_HEIGHT = 36
-    _MAX_HEIGHT = 160  # ~5 lines
+    _MAX_HEIGHT = 144  # 4 × 36
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,12 +33,40 @@ class _AutoExpandingEdit(QPlainTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.document().contentsChanged.connect(self._adjust_height)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Recalculate limits now that the font and style are fully applied
+        line_h = self.fontMetrics().lineSpacing()
+        if line_h >= 8:  # sanity check
+            margins = self.contentsMargins()
+            v_pad = margins.top() + margins.bottom() + 4
+            self._MIN_HEIGHT = line_h + v_pad
+            self._MAX_HEIGHT = line_h * 4 + v_pad
+            self.setFixedHeight(self._MIN_HEIGHT)
+
     def _adjust_height(self):
-        doc_height = int(self.document().size().height())
+        # document().size().height() for QPlainTextDocumentLayout returns block count,
+        # not pixel height — so we count actual visual lines from each block's layout.
+        doc = self.document()
+        total_lines = 0
+        block = doc.begin()
+        while block.isValid():
+            layout = block.layout()
+            count = layout.lineCount() if layout else 0
+            total_lines += count if count > 0 else 1
+            block = block.next()
+        total_lines = max(1, total_lines)
+
+        line_h = self.fontMetrics().lineSpacing()
         margins = self.contentsMargins()
-        new_h = doc_height + margins.top() + margins.bottom() + 4
+        new_h = line_h * total_lines + margins.top() + margins.bottom() + 4
         new_h = max(self._MIN_HEIGHT, min(new_h, self._MAX_HEIGHT))
         self.setFixedHeight(new_h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Width changes affect word-wrap, so recalculate height
+        self._adjust_height()
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
