@@ -3,6 +3,7 @@ ChatTab - 채팅 탭 (QWebEngineView + marked.js + highlight.js)
 """
 
 import sys
+import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -138,17 +139,6 @@ class ChatTab(QWidget):
 
     # ── JS 브릿지 헬퍼 ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def _js_escape(text: str) -> str:
-        """JS 템플릿 리터럴(backtick)에 안전하게 삽입할 수 있도록 이스케이프."""
-        return (text
-            .replace('\\', '\\\\')
-            .replace('`', '\\`')
-            .replace('$', '\\$')
-            .replace('\r\n', '\\n')
-            .replace('\n', '\\n')
-            .replace('\r', '\\n'))
-
     def _run_js(self, script: str):
         """JavaScript 실행 — 페이지 로드 전이면 큐에 저장."""
         if self._page_loaded:
@@ -163,14 +153,14 @@ class ChatTab(QWidget):
         self._page_loaded = True
         # 기존 메시지 히스토리 복원
         for msg in self._messages:
-            escaped = self._js_escape(msg["content"])
+            jtext = json.dumps(msg["content"])
             if msg["role"] == "user":
                 self.chat_display.page().runJavaScript(
-                    f"appendUserMessage(`{escaped}`)"
+                    f"appendUserMessage({jtext})"
                 )
             else:
                 self.chat_display.page().runJavaScript(
-                    f"appendFinishedAiMessage(`{escaped}`)"
+                    f"appendFinishedAiMessage({jtext})"
                 )
         # 대기 중이던 JS 실행
         for js in self._pending_js:
@@ -291,6 +281,12 @@ class ChatTab(QWidget):
         # ── 입력 행 (항상 하단 고정) ───────────────────────────────────────────
         input_row = QHBoxLayout()
         self.input_edit = _AutoExpandingEdit()
+        self.input_edit.setStyleSheet(
+            "QPlainTextEdit { border: 1px solid #2a3045; border-radius: 18px; "
+            "padding: 6px 14px; background: #1e2330; color: #e2e8f0; }"
+            "QPlainTextEdit:focus { border-color: #4f8ef7; }"
+        )
+        self.input_edit.viewport().setStyleSheet("background: transparent;")
         self.input_edit.returnPressed.connect(self._on_send)
         self.send_btn = QPushButton("전송")
         self.send_btn.setMinimumHeight(36)
@@ -336,8 +332,7 @@ class ChatTab(QWidget):
             self._streaming_buf += citation
             return
         self._streaming_buf += chunk
-        escaped = self._js_escape(self._streaming_buf)
-        self._run_js(f"streamingBuffer=`{escaped}`;renderStreamingBuffer()")
+        self._run_js(f"streamingBuffer={json.dumps(self._streaming_buf)};renderStreamingBuffer()")
 
     def on_streaming_finished(self, answer: str, result: dict):
         """LLMWorker.finished_signal 수신"""
@@ -345,8 +340,7 @@ class ChatTab(QWidget):
         self._streaming_buf = ""
         self._messages.append({"role": "assistant", "content": answer})
         # 최종 버퍼를 answer로 설정 후 finishAiMessage 호출
-        escaped = self._js_escape(answer)
-        self._run_js(f"streamingBuffer=`{escaped}`;finishAiMessage()")
+        self._run_js(f"streamingBuffer={json.dumps(answer)};finishAiMessage()")
         self._render_sources(result)
         self.input_edit.setEnabled(True)
         self._restore_send_btn()
@@ -382,16 +376,14 @@ class ChatTab(QWidget):
 
     def update_force_preview(self, preview_md: str):
         """Force Mode 누적 결과 미리보기"""
-        escaped = self._js_escape(preview_md)
-        self._run_js(f"streamingBuffer=`{escaped}`;renderStreamingBuffer()")
+        self._run_js(f"streamingBuffer={json.dumps(preview_md)};renderStreamingBuffer()")
 
     def finish_force_mode(self, answer: str):
         """Force Mode 완료"""
         self._is_streaming = False
         self._streaming_buf = ""
         self._messages.append({"role": "assistant", "content": answer})
-        escaped = self._js_escape(answer)
-        self._run_js(f"streamingBuffer=`{escaped}`;finishAiMessage()")
+        self._run_js(f"streamingBuffer={json.dumps(answer)};finishAiMessage()")
         self.force_bar.setVisible(False)
         self.input_edit.setEnabled(True)
         self.send_btn.setEnabled(True)
@@ -486,8 +478,7 @@ class ChatTab(QWidget):
 
     def _append_user_message(self, text: str):
         self._messages.append({"role": "user", "content": text})
-        escaped = self._js_escape(text)
-        self._run_js(f"appendUserMessage(`{escaped}`)")
+        self._run_js(f"appendUserMessage({json.dumps(text)})")
 
     def _render_sources(self, result: dict):
         if not result:
