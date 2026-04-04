@@ -265,6 +265,8 @@ class MainWindow(QMainWindow):
 
         self.chat_tab.start_streaming(query)
 
+        conversation_history = self.chat_tab.get_history_for_llm(max_turns=3)
+
         self._llm_worker = LLMWorker(
             agent           = self.state.agent,
             llm             = self.state.llm,
@@ -273,6 +275,7 @@ class MainWindow(QMainWindow):
             query           = query,
             retrieval_mode  = retrieval_mode,
             is_suggested    = is_suggested,
+            conversation_history = conversation_history,
         )
         self._llm_worker.status_signal.connect(self.chat_tab.status_label.setText)
         self._llm_worker.chunk_received.connect(self.chat_tab.on_chunk_received)

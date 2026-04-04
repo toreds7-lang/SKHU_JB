@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
 class RagBuildWorker(QThread):
@@ -68,7 +68,8 @@ class LLMWorker(QThread):
     error_signal    = pyqtSignal(str)
 
     def __init__(self, agent, llm, sys_prompt: str, llm_only_prompt: str,
-                 query: str, retrieval_mode: str, is_suggested: bool):
+                 query: str, retrieval_mode: str, is_suggested: bool,
+                 conversation_history: list[dict] | None = None):
         super().__init__()
         self.agent            = agent
         self.llm              = llm
@@ -77,7 +78,18 @@ class LLMWorker(QThread):
         self.query            = query
         self.retrieval_mode   = retrieval_mode
         self.is_suggested     = is_suggested
+        self.conversation_history = conversation_history or []
         self._stopped         = False
+
+    def _build_history_messages(self) -> list:
+        """Convert conversation history dicts to LangChain message objects."""
+        msgs = []
+        for m in self.conversation_history:
+            if m["role"] == "user":
+                msgs.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                msgs.append(AIMessage(content=m["content"]))
+        return msgs
 
     def stop(self):
         self._stopped = True
@@ -128,19 +140,21 @@ class LLMWorker(QThread):
                     f"질문: {self.query}\n\n"
                     f"위 컨텍스트를 바탕으로 질문에 답변해 주세요."
                 )
-                answer = stream_messages([
-                    SystemMessage(content=self.sys_prompt),
-                    HumanMessage(content=rag_prompt),
-                ])
+                answer = stream_messages(
+                    [SystemMessage(content=self.sys_prompt)]
+                    + self._build_history_messages()
+                    + [HumanMessage(content=rag_prompt)]
+                )
 
                 if rag_not_found(answer):
                     if self.is_suggested:
                         # 스트리밍 버퍼 초기화 신호
                         self.chunk_received.emit("\x00RESET\x00")
-                        answer = stream_messages([
-                            SystemMessage(content=self.llm_only_prompt),
-                            HumanMessage(content=self.query),
-                        ])
+                        answer = stream_messages(
+                            [SystemMessage(content=self.llm_only_prompt)]
+                            + self._build_history_messages()
+                            + [HumanMessage(content=self.query)]
+                        )
                 else:
                     # 출처 추가
                     src_map: dict[str, list] = {}
@@ -157,10 +171,11 @@ class LLMWorker(QThread):
                     self.chunk_received.emit("\x00CITATION\x00" + citation)
 
             elif self.is_suggested:
-                answer = stream_messages([
-                    SystemMessage(content=self.llm_only_prompt),
-                    HumanMessage(content=self.query),
-                ])
+                answer = stream_messages(
+                    [SystemMessage(content=self.llm_only_prompt)]
+                    + self._build_history_messages()
+                    + [HumanMessage(content=self.query)]
+                )
             else:
                 answer = "🔍 관련 문서를 찾지 못했습니다. 노트북 내용과 관련된 질문을 해주세요."
                 self.chunk_received.emit(answer)

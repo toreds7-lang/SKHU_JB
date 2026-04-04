@@ -455,6 +455,31 @@ class ChatTab(QWidget):
         if self._example_chips_layout.count() > 1:
             self.example_bar.setVisible(True)
 
+    def get_history_for_llm(self, max_turns: int = 3, max_chars: int = 500) -> list[dict]:
+        """Return last N conversation turns for LLM context (excludes current query)."""
+        history = self._messages[:-1] if self._messages else []
+        # Filter out Force Mode messages and their responses
+        filtered = []
+        skip_next = False
+        for m in history:
+            if skip_next:
+                skip_next = False
+                continue
+            if m["role"] == "user" and "\U0001f50d [Force Mode]" in m["content"]:
+                skip_next = True
+                continue
+            filtered.append(m)
+        # Take last max_turns exchanges (2 messages per turn)
+        filtered = filtered[-(max_turns * 2):]
+        # Truncate long assistant messages
+        result = []
+        for m in filtered:
+            if m["role"] == "assistant" and len(m["content"]) > max_chars:
+                result.append({"role": m["role"], "content": m["content"][:max_chars] + "\u2026"})
+            else:
+                result.append(m)
+        return result
+
     # ── 내부 메서드 ────────────────────────────────────────────────────────────
 
     def _on_send(self):
