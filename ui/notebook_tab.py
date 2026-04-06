@@ -6,16 +6,18 @@ NotebookTab - 노트북 뷰어 + 요약 탭
 
 import json
 import os
+import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QScrollArea, QFrame, QTextEdit, QSizePolicy,
     QPushButton, QProgressBar, QSplitter, QStackedWidget, QCheckBox,
-    QTextBrowser
 )
-from PyQt6.QtCore import Qt, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import QWebEnginePage
 
 
 class CellWidget(QFrame):
@@ -89,6 +91,22 @@ _TOGGLE_INACTIVE = (
 )
 
 
+class _SummaryLinkPage(QWebEnginePage):
+    """외부 링크 → 시스템 브라우저, __COPY__ → 클립보드"""
+
+    def acceptNavigationRequest(self, url, nav_type, is_main):
+        if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+            from PyQt6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(url)
+            return False
+        return super().acceptNavigationRequest(url, nav_type, is_main)
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith("__COPY__:"):
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(message[len("__COPY__:"):])
+
+
 _SUMMARIZED_COLOR = QColor("#60a5fa")   # 파란색 — 요약 완료
 _DEFAULT_COLOR    = QColor("#e2e8f0")   # 기본 텍스트 색
 
@@ -103,8 +121,8 @@ class NotebookTab(QWidget):
         self._summaries: dict[str, str] = {}   # in-memory cache
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
-        self._summary_font_size = 12
-        self._tb_viewports: set = set()
+        self._summary_font_size = 13
+        self._summary_page_ready = False
         self._build_ui()
 
     def _build_ui(self):
@@ -226,28 +244,18 @@ class NotebookTab(QWidget):
         self.cell_scroll.setWidget(self._cell_container)
         self.view_stack.addWidget(self.cell_scroll)
 
-        # --- 요약 보기 ---
-        self.summary_scroll = QScrollArea()
-        self.summary_scroll.setWidgetResizable(True)
-        self.summary_scroll.setStyleSheet(
-            "QScrollArea { border: 1px solid #2a3045; border-radius: 6px; "
-            "background: #0d0f14; }"
-        )
-        self._summary_container = QWidget()
-        self._summary_layout = QVBoxLayout(self._summary_container)
-        self._summary_layout.setContentsMargins(12, 12, 12, 12)
-        self._summary_layout.setSpacing(12)
-        self._summary_layout.addStretch()
-
-        self._summary_placeholder = QLabel("📝 노트북을 선택하고 '요약 생성'을 클릭하세요.")
-        self._summary_placeholder.setStyleSheet(
-            "color: #64748b; font-size: 12px; padding: 20px;"
-        )
-        self._summary_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._summary_layout.insertWidget(0, self._summary_placeholder)
-
-        self.summary_scroll.setWidget(self._summary_container)
-        self.view_stack.addWidget(self.summary_scroll)
+        # --- 요약 보기 (QWebEngineView + marked.js) ---
+        self.summary_web = QWebEngineView()
+        self.summary_web.setPage(_SummaryLinkPage(self.summary_web))
+        self.summary_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        if getattr(sys, "frozen", False):
+            _base = Path(sys._MEIPASS)
+        else:
+            _base = Path(__file__).parent.parent
+        html_path = _base / "resources" / "summary.html"
+        self.summary_web.setUrl(QUrl.fromLocalFile(str(html_path.resolve())))
+        self.summary_web.loadFinished.connect(self._on_summary_page_loaded)
+        self.view_stack.addWidget(self.summary_web)
 
         right_layout.addWidget(self.view_stack)
         splitter.addWidget(right_panel)
@@ -260,35 +268,32 @@ class NotebookTab(QWidget):
         QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self._zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self._zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self._zoom_reset)
-        self.summary_scroll.viewport().installEventFilter(self)
 
     # ── 줌 (요약 보기 글자 크기) ─────────────────────────────────────────────
 
     def _zoom_in(self):
         if self._summary_font_size < 24:
             self._summary_font_size += 1
-            self._rebuild_summary_view()
+            self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_out(self):
         if self._summary_font_size > 8:
             self._summary_font_size -= 1
-            self._rebuild_summary_view()
+            self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_reset(self):
-        self._summary_font_size = 12
-        self._rebuild_summary_view()
+        self._summary_font_size = 13
+        self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
-    def eventFilter(self, obj, event):
-        if ((obj is self.summary_scroll.viewport() or obj in self._tb_viewports)
-                and event.type() == QEvent.Type.Wheel):
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                delta = event.angleDelta().y()
-                if delta > 0:
-                    self._zoom_in()
-                elif delta < 0:
-                    self._zoom_out()
-                return True
-        return super().eventFilter(obj, event)
+    def _on_summary_page_loaded(self, ok: bool):
+        if ok:
+            self._summary_page_ready = True
+            self._run_summary_js(f"setFontSize({self._summary_font_size})")
+            self._rebuild_summary_view()
+
+    def _run_summary_js(self, script: str):
+        if self._summary_page_ready:
+            self.summary_web.page().runJavaScript(script)
 
     # ── 뷰 전환 ──────────────────────────────────────────────────────────────
 
@@ -549,12 +554,10 @@ class NotebookTab(QWidget):
 
     def _rebuild_summary_view(self):
         """체크된 노트북의 캐시된 요약을 요약 뷰에 표시"""
-        self._tb_viewports.clear()
-        # 기존 위젯 제거
-        while self._summary_layout.count() > 0:
-            item = self._summary_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        if not self._summary_page_ready:
+            return
+
+        self._run_summary_js("clearCards()")
 
         checked = self._get_checked_names()
         has_summary = False
@@ -562,71 +565,13 @@ class NotebookTab(QWidget):
         for name in checked:
             if name in self._summaries:
                 has_summary = True
-                card = self._make_summary_card(name, self._summaries[name])
-                self._summary_layout.addWidget(card)
+                escaped = json.dumps(name)
+                md_escaped = json.dumps(self._summaries[name])
+                self._run_summary_js(
+                    f"addSummaryCard({escaped},{md_escaped})"
+                )
 
         if not has_summary:
-            placeholder = QLabel("📝 노트북을 선택하고 '요약 생성'을 클릭하세요.")
-            placeholder.setStyleSheet(
-                "color: #64748b; font-size: 12px; padding: 20px;"
+            self._run_summary_js(
+                'showPlaceholder("\\uD83D\\uDCDD 노트북을 선택하고 \'요약 생성\'을 클릭하세요.")'
             )
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._summary_layout.addWidget(placeholder)
-
-        self._summary_layout.addStretch()
-
-    def _make_summary_card(self, nb_name: str, summary: str) -> QFrame:
-        """노트북 요약 카드 위젯 생성"""
-        card = QFrame()
-        card.setStyleSheet(
-            "QFrame { background: #111827; border: 1px solid #2a3045; "
-            "border-radius: 8px; }"
-        )
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
-        card_layout.setSpacing(6)
-
-        # 노트북 이름 헤더
-        header = QLabel(f"📓 {nb_name}")
-        header.setStyleSheet(
-            "color: #e2e8f0; font-size: 13px; font-weight: 700; "
-            "border: none; background: transparent;"
-        )
-        card_layout.addWidget(header)
-
-        # 구분선
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background: #2a3045; border: none; max-height: 1px;")
-        card_layout.addWidget(sep)
-
-        # 요약 내용 (마크다운 렌더링)
-        content = QTextBrowser()
-        content.viewport().installEventFilter(self)
-        self._tb_viewports.add(content.viewport())
-        content.setOpenExternalLinks(True)
-        content.setStyleSheet(
-            f"QTextBrowser {{ color: #cbd5e1; font-size: {self._summary_font_size}px; "
-            "border: none; background: transparent; }"
-        )
-        doc = content.document()
-        doc.setDefaultStyleSheet(
-            "body { color: #cbd5e1; }"
-            "h1, h2, h3, h4 { color: #60a5fa; }"
-            "code { background: #0d1117; color: #f97316; }"
-            "pre { background: #0d1117; color: #e2e8f0; }"
-            "strong { color: #f1f5f9; }"
-            "a { color: #60a5fa; }"
-            "li { color: #cbd5e1; }"
-        )
-        content.setMarkdown(summary)
-        content.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
-        # 문서 크기가 결정된 후 높이 조절
-        doc.setTextWidth(content.viewport().width() or 600)
-        doc_height = int(doc.size().height()) + 16
-        content.setMinimumHeight(max(doc_height, 60))
-        card_layout.addWidget(content)
-
-        return card

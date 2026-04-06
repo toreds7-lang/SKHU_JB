@@ -79,13 +79,21 @@ class _AutoExpandingEdit(QPlainTextEdit):
             super().keyPressEvent(event)
 
 
+_COPY_PREFIX = "__COPY__:"
+
 class _ExternalLinkPage(QWebEnginePage):
-    """링크 클릭 시 시스템 기본 브라우저로 열기"""
+    """링크 클릭 시 시스템 기본 브라우저로 열기 + console 메시지로 클립보드 복사"""
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
         if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
             QDesktopServices.openUrl(url)
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith(_COPY_PREFIX):
+            text = message[len(_COPY_PREFIX):]
+            QApplication.clipboard().setText(text)
+        # 다른 콘솔 메시지는 무시 (디버그용으로 super 호출 가능)
 
 
 # ── 출처 카드 (sources_display용, QTextBrowser에서 계속 사용) ─────────────────

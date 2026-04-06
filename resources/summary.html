@@ -15,7 +15,7 @@ body {
   color: #e2e8f0;
   font-family: "Pretendard","Malgun Gothic","Apple SD Gothic Neo","Noto Sans CJK KR",sans-serif;
   font-size: 13px;
-  padding: 8px;
+  padding: 12px;
   overflow-x: hidden;
 }
 
@@ -25,42 +25,31 @@ body {
 ::-webkit-scrollbar-thumb { background: #2a3045; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #64748b; }
 
-/* ── Message layout ────────────────────────────────────────── */
-.msg { margin: 6px 0; display: flex; }
-.msg-user { justify-content: flex-end; }
-.msg-ai   { justify-content: flex-start; }
-
-.bubble {
-  max-width: 70%;
-  padding: 10px 14px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-.bubble-user {
-  background: linear-gradient(135deg, #1e3a5f, #1e2a4a);
-  border: 1px solid #1d4ed8;
-  border-radius: 12px 12px 4px 12px;
-  text-align: right;
-}
-.bubble-ai {
-  background: #1e2330;
-  border: 1px solid #2a3045;
-  border-radius: 4px 12px 12px 12px;
-}
-
-.msg-label {
-  font-size: 10px;
-  color: #94a3b8;
-  margin-bottom: 4px;
-  font-family: "JetBrains Mono",Consolas,monospace;
-}
-.msg-user .msg-label { text-align: right; }
-
-/* ── Markdown content ──────────────────────────────────────── */
-.content p { margin: 0.4em 0; }
-.content pre {
-  position: relative;
+/* ── Summary Card ─────────────────────────────────────────── */
+.summary-card {
   background: #111827;
+  border: 1px solid #2a3045;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.card-header {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2a3045;
+}
+.card-body {
+  line-height: 1.7;
+}
+
+/* ── Markdown content (chat.html과 동일) ──────────────────── */
+.card-body p { margin: 0.4em 0; }
+.card-body pre {
+  position: relative;
+  background: #0a0e17;
   border-left: 3px solid #f97316;
   border-radius: 0 4px 4px 0;
   padding: 8px;
@@ -85,54 +74,54 @@ body {
   transition: opacity 0.15s;
   z-index: 1;
 }
-.content pre:hover .copy-btn { opacity: 1; }
+.card-body pre:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: #3a4055; color: #e2e8f0; }
 .copy-btn.copied { color: #4ade80; border-color: #4ade80; }
-.content pre code {
+.card-body pre code {
   background: none;
   color: inherit;
   padding: 0;
   border-radius: 0;
   font-size: 11px;
 }
-.content code {
+.card-body code {
   font-family: "JetBrains Mono",Consolas,monospace;
 }
-.content :not(pre) > code {
+.card-body :not(pre) > code {
   background: #0d1117;
   color: #f97316;
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 12px;
 }
-.content table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
-.content th, .content td {
+.card-body table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.card-body th, .card-body td {
   border: 1px solid #2a3045;
   padding: 4px 8px;
   font-size: 12px;
   text-align: left;
 }
-.content th { background: #1e2330; color: #94a3b8; font-weight: 600; }
-.content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {
+.card-body th { background: #1e2330; color: #94a3b8; font-weight: 600; }
+.card-body h1, .card-body h2, .card-body h3, .card-body h4, .card-body h5, .card-body h6 {
   color: #60a5fa;
   margin: 0.6em 0 0.3em;
 }
-.content h1 { font-size: 1.3em; }
-.content h2 { font-size: 1.15em; }
-.content h3 { font-size: 1.05em; }
-.content ul, .content ol { padding-left: 1.5em; margin: 0.3em 0; }
-.content li { margin: 0.15em 0; }
-.content hr { border: none; border-top: 1px solid #2a3045; margin: 0.6em 0; }
-.content blockquote {
+.card-body h1 { font-size: 1.3em; }
+.card-body h2 { font-size: 1.15em; }
+.card-body h3 { font-size: 1.05em; }
+.card-body ul, .card-body ol { padding-left: 1.5em; margin: 0.3em 0; }
+.card-body li { margin: 0.15em 0; }
+.card-body hr { border: none; border-top: 1px solid #2a3045; margin: 0.6em 0; }
+.card-body blockquote {
   border-left: 3px solid #a78bfa;
   padding-left: 10px;
   color: #94a3b8;
   margin: 0.4em 0;
 }
-.content a { color: #60a5fa; text-decoration: none; }
-.content a:hover { text-decoration: underline; }
-.content strong { color: #f1f5f9; }
-.content img { max-width: 100%; border-radius: 4px; }
+.card-body a { color: #60a5fa; text-decoration: none; }
+.card-body a:hover { text-decoration: underline; }
+.card-body strong { color: #f1f5f9; }
+.card-body img { max-width: 100%; border-radius: 4px; }
 
 /* ── Highlight.js dark theme (Atom One Dark inspired) ──────── */
 .hljs { color: #abb2bf; }
@@ -156,23 +145,17 @@ body {
 .katex { color: #e2e8f0; font-size: 1.1em; }
 .katex-display { margin: 0.6em 0; overflow-x: auto; }
 
-/* ── Streaming cursor (pure CSS animation) ─────────────────── */
-.cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  background: #4f8ef7;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
-}
-@keyframes blink {
-  50% { opacity: 0; }
+/* ── Placeholder ──────────────────────────────────────────── */
+.placeholder {
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+  padding: 40px 20px;
 }
 </style>
 </head>
 <body>
-<div id="chat-container"></div>
+<div id="cards-container"></div>
 
 <script>
 // ── KaTeX 수학 확장 (marked.js 플러그인) ─────────────────────
@@ -184,7 +167,6 @@ function _katexRender(text, displayMode) {
 
 const mathExtension = {
   extensions: [
-    // $$...$$ (display block)
     {
       name: 'displayMath',
       level: 'block',
@@ -197,7 +179,6 @@ const mathExtension = {
         return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
       }
     },
-    // \[...\] (display block) — marked.js가 \[ 를 삼키기 전에 처리
     {
       name: 'displayMathBracket',
       level: 'block',
@@ -210,7 +191,6 @@ const mathExtension = {
         return _katexRender(token.text, true) || '<span>' + token.raw + '</span>';
       }
     },
-    // $...$ (inline)
     {
       name: 'inlineMath',
       level: 'inline',
@@ -223,7 +203,6 @@ const mathExtension = {
         return _katexRender(token.text, false) || '<span>' + token.raw + '</span>';
       }
     },
-    // \(...\) (inline) — marked.js가 \( 를 삼키기 전에 처리
     {
       name: 'inlineMathParen',
       level: 'inline',
@@ -255,39 +234,10 @@ marked.setOptions({
   gfm: true
 });
 
-const container = document.getElementById('chat-container');
-let currentAiBubble = null;   // 활성 스트리밍 AI 버블의 .content div
-let streamingBuffer = '';      // 스트리밍 중 누적된 마크다운 텍스트
-const MAX_MESSAGES = 50;       // 최대 표시 메시지 수
-
-// ── Utility ──────────────────────────────────────────────────
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-function isNearBottom(threshold) {
-  threshold = threshold || 50;
-  return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - threshold);
-}
-
-function scrollToBottom(force) {
-  if (force || isNearBottom()) {
-    window.scrollTo(0, document.body.scrollHeight);
-  }
-}
-
-function trimMessages() {
-  while (container.children.length > MAX_MESSAGES) {
-    container.removeChild(container.firstChild);
-  }
-}
+var container = document.getElementById('cards-container');
 
 // ── 코드 복사 버튼 ──────────────────────────────────────────────
 function copyViaConsole(text) {
-  // Python _ExternalLinkPage.javaScriptConsoleMessage()가
-  // "__COPY__:" 접두어를 감지하여 QClipboard.setText()로 복사
   console.log("__COPY__:" + text);
 }
 
@@ -297,13 +247,13 @@ function addCopyButtons(root) {
     if (pre.querySelector('.copy-btn')) return;
     var btn = document.createElement('button');
     btn.className = 'copy-btn';
-    btn.textContent = '복사';
+    btn.textContent = '\uBCF5\uC0AC';
     btn.addEventListener('click', function() {
       copyViaConsole(codeEl.textContent);
-      btn.textContent = '\u2713 복사됨';
+      btn.textContent = '\u2713 \uBCF5\uC0AC\uB428';
       btn.classList.add('copied');
       setTimeout(function() {
-        btn.textContent = '복사';
+        btn.textContent = '\uBCF5\uC0AC';
         btn.classList.remove('copied');
       }, 1500);
     });
@@ -313,93 +263,41 @@ function addCopyButtons(root) {
 
 // ── Public API (Python에서 runJavaScript로 호출) ──────────────
 
-/** 사용자 메시지 버블 추가 */
-function appendUserMessage(text) {
-  const msg = document.createElement('div');
-  msg.className = 'msg msg-user';
-  msg.innerHTML =
-    '<div class="bubble bubble-user">' +
-      '<div class="msg-label">\uD83D\uDC64 사용자</div>' +
-      '<div class="content">' + escapeHtml(text) + '</div>' +
-    '</div>';
-  container.appendChild(msg);
-  trimMessages();
-  scrollToBottom(true);
-}
+function addSummaryCard(nbName, markdown) {
+  // placeholder 제거
+  var ph = container.querySelector('.placeholder');
+  if (ph) ph.remove();
 
-/** 스트리밍 AI 메시지 시작 */
-function startAiMessage() {
-  streamingBuffer = '';
-  const msg = document.createElement('div');
-  msg.className = 'msg msg-ai';
-  msg.innerHTML =
-    '<div class="bubble bubble-ai">' +
-      '<div class="msg-label">\uD83E\uDD16 AI 튜터</div>' +
-      '<div class="content" id="streaming-content"><span class="cursor"></span></div>' +
-    '</div>';
-  container.appendChild(msg);
-  currentAiBubble = document.getElementById('streaming-content');
-  scrollToBottom(true);
-}
+  var card = document.createElement('div');
+  card.className = 'summary-card';
 
-/** 스트리밍 버퍼를 marked.js로 렌더링 + 커서 표시 */
-function renderStreamingBuffer() {
-  if (!currentAiBubble) return;
-  currentAiBubble.innerHTML = marked.parse(streamingBuffer) + '<span class="cursor"></span>';
-  currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
+  var header = document.createElement('div');
+  header.className = 'card-header';
+  header.textContent = '\uD83D\uDCD3 ' + nbName;
+  card.appendChild(header);
+
+  var body = document.createElement('div');
+  body.className = 'card-body';
+  body.innerHTML = marked.parse(markdown);
+  body.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
-  addCopyButtons(currentAiBubble);
-  scrollToBottom();
+  addCopyButtons(body);
+  card.appendChild(body);
+
+  container.appendChild(card);
 }
 
-/** 스트리밍 완료 — 최종 렌더링 (커서 제거) */
-function finishAiMessage() {
-  if (!currentAiBubble) return;
-  currentAiBubble.innerHTML = marked.parse(streamingBuffer);
-  currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
-    hljs.highlightElement(el);
-  });
-  addCopyButtons(currentAiBubble);
-  currentAiBubble.removeAttribute('id');
-  currentAiBubble = null;
-  streamingBuffer = '';
-  trimMessages();
-  scrollToBottom();
-}
-
-/** 히스토리 복원용 — 완성된 AI 메시지 추가 */
-function appendFinishedAiMessage(text) {
-  const msg = document.createElement('div');
-  msg.className = 'msg msg-ai';
-  const rendered = marked.parse(text);
-  msg.innerHTML =
-    '<div class="bubble bubble-ai">' +
-      '<div class="msg-label">\uD83E\uDD16 AI 튜터</div>' +
-      '<div class="content">' + rendered + '</div>' +
-    '</div>';
-  container.appendChild(msg);
-  msg.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
-    hljs.highlightElement(el);
-  });
-  addCopyButtons(msg);
-  trimMessages();
-  scrollToBottom(true);
-}
-
-/** 전체 채팅 초기화 */
-function clearChat() {
+function clearCards() {
   container.innerHTML = '';
-  currentAiBubble = null;
-  streamingBuffer = '';
 }
 
-/** 스트리밍 버퍼 리셋 (fallback 전환 시) */
-function resetStreamingBuffer() {
-  streamingBuffer = '';
-  if (currentAiBubble) {
-    currentAiBubble.innerHTML = '<span class="cursor"></span>';
-  }
+function showPlaceholder(msg) {
+  container.innerHTML = '<div class="placeholder">' + msg + '</div>';
+}
+
+function setFontSize(px) {
+  document.body.style.fontSize = px + 'px';
 }
 </script>
 </body>
