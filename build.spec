@@ -40,7 +40,9 @@ a = Analysis(
         ("system_prompt.txt",     "."),
         ("resources/dark_theme.qss", "resources"),
         ("resources/chat.html",      "resources"),
+        ("resources/summary.html",   "resources"),
         ("resources/js",             "resources/js"),
+        ("resources/css",            "resources/css"),
         # kiwipiepy 모델 데이터
         *_collect_kiwipiepy(),
     ],
