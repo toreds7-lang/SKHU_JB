@@ -206,8 +206,9 @@ RAG 검색 파이프라인의 디버깅을 위한 retriever별 결과 로깅 기
 | `env_loader.py` | env.txt 환경변수 로더 |
 | `notebook_rag_agent.py` | **레거시** Streamlit 앱 (미사용, 수정 금지) |
 | `work/` | Lecture notebook directory (`.ipynb` files) |
-| `system_prompt.txt` | Optional custom LLM system prompt |
-| `force_prompt.txt` | Force Mode system prompt (관련성 판단용) |
+| `prompts/system_prompt.txt` | Optional custom LLM system prompt |
+| `prompts/force_prompt.txt` | Force Mode system prompt (관련성 판단용) |
+| `prompts/summary_prompt.txt` | Notebook summary system prompt |
 | `config.txt` | RAG pipeline parameter configuration |
 | `trace_logs/` | Trace debug 로그 출력 폴더 (`TRACE_DEBUG=true` 시 생성) |
 | `requirements_1.txt` | Python dependencies |

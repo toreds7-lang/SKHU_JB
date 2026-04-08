@@ -37,7 +37,9 @@ a = Analysis(
     datas=[
         # 리소스 파일
         ("SK_Hynix.png",          "."),
-        ("system_prompt.txt",     "."),
+        ("prompts/system_prompt.txt",  "prompts"),
+        ("prompts/force_prompt.txt",   "prompts"),
+        ("prompts/summary_prompt.txt", "prompts"),
         ("resources/dark_theme.qss", "resources"),
         ("resources/chat.html",      "resources"),
         ("resources/summary.html",   "resources"),

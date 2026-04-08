@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QSplitter, QStackedWidget, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut
+from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
@@ -178,6 +178,13 @@ class NotebookTab(QWidget):
         self.generate_btn.setStyleSheet(_BTN_STYLE)
         self.generate_btn.clicked.connect(self._on_generate_click)
         left_layout.addWidget(self.generate_btn)
+
+        # 프롬프트 편집 버튼
+        self.edit_prompt_btn = QPushButton("✏️ 프롬프트 편집")
+        self.edit_prompt_btn.setStyleSheet(_BTN_STYLE)
+        self.edit_prompt_btn.setToolTip("prompts/summary_prompt.txt를 텍스트 에디터로 엽니다")
+        self.edit_prompt_btn.clicked.connect(self._on_edit_prompt)
+        left_layout.addWidget(self.edit_prompt_btn)
 
         # 프로그레스 바 (숨김)
         self.progress_bar = QProgressBar()
@@ -438,6 +445,13 @@ class NotebookTab(QWidget):
             self._render_notebook(nb)
 
     # ── 요약 생성 ────────────────────────────────────────────────────────────
+
+    def _on_edit_prompt(self):
+        fp = Path("prompts/summary_prompt.txt")
+        if not fp.exists():
+            from rag_core import load_summary_prompt
+            fp.write_text(load_summary_prompt(), encoding="utf-8")
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(fp.resolve())))
 
     def _on_generate_click(self):
         checked = self._get_checked_names()

@@ -2,6 +2,29 @@
 import os
 
 
+def save_env_models(llm_model: str, emb_model: str, path: str = "env.txt") -> None:
+    """LLM_MODEL / EMBEDDING_MODEL 값을 env.txt에 갱신(없으면 끝에 추가)."""
+    targets = {"LLM_MODEL": llm_model, "EMBEDDING_MODEL": emb_model}
+    lines = []
+    found: set[str] = set()
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if "=" in stripped and not stripped.startswith("#"):
+                    key = stripped.partition("=")[0].strip()
+                    if key in targets:
+                        lines.append(f"{key}={targets[key]}\n")
+                        found.add(key)
+                        continue
+                lines.append(line)
+    for key, val in targets.items():
+        if key not in found:
+            lines.append(f"{key}={val}\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
 def load_env_txt(path: str = "env.txt") -> dict[str, str]:
     """env.txt 파일에서 KEY=VALUE 형태의 설정을 읽어 os.environ에 반영."""
     env_vars = {}

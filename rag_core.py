@@ -468,8 +468,9 @@ def make_agent(llm_base_url: str, llm_api_key: str, llm_model: str,
                 seen.add(key)
                 merged.append(d)
 
+        _max_docs = int(RAG_CONFIG.get("MAX_DOCS", "10"))
         parts = []
-        for i, d in enumerate(merged[:10]):
+        for i, d in enumerate(merged[:_max_docs]):
             nb    = d.metadata.get("notebook", "?")
             cidx  = d.metadata.get("cell_idx", "?")
             ctype = d.metadata.get("cell_type", "?")
@@ -484,13 +485,13 @@ def make_agent(llm_base_url: str, llm_api_key: str, llm_model: str,
             vector_docs=state.get("vector_docs", []),
             bm25_docs=state.get("bm25_docs", []),
             graph_docs=state.get("graph_docs", []),
-            merged_docs=merged[:10],
+            merged_docs=merged[:_max_docs],
         )
 
         return {**state, "all_docs": merged, "context": context,
                 "steps": ["✅ 문서 병합 완료"]}
 
-    _prompt_file = Path("system_prompt.txt")
+    _prompt_file = Path("prompts/system_prompt.txt")
     if _prompt_file.exists():
         SYSTEM_PROMPT = _prompt_file.read_text(encoding="utf-8").strip()
     else:
@@ -729,7 +730,7 @@ JSON:"""
 
 def load_force_prompt() -> str:
     """force_prompt.txt에서 Force Mode 시스템 프롬프트를 로드합니다."""
-    _fp = Path("force_prompt.txt")
+    _fp = Path("prompts/force_prompt.txt")
     if _fp.exists():
         return _fp.read_text(encoding="utf-8").strip()
     return (
@@ -851,7 +852,7 @@ def format_force_results(results: list[dict], progress: tuple,
 
 def load_summary_prompt() -> str:
     """summary_prompt.txt에서 요약 시스템 프롬프트를 로드합니다."""
-    _fp = Path("summary_prompt.txt")
+    _fp = Path("prompts/summary_prompt.txt")
     if _fp.exists():
         return _fp.read_text(encoding="utf-8").strip()
     return (

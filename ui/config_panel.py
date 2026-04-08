@@ -4,6 +4,7 @@ Streamlit sidebar 대체
 """
 
 import os
+from env_loader import save_env_models
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QComboBox, QGroupBox, QFileDialog, QScrollArea,
@@ -302,9 +303,9 @@ class ConfigPanel(QWidget):
         s = QSettings("SKHynix", "SKHU_Agent")
         self.nb_dir_edit.setText(s.value("nb_dir", "work"))
         self.llm_url_edit.setText(s.value("llm_url", os.getenv("LLM_BASE_URL", "")))
-        self.llm_model_edit.setText(s.value("llm_model", os.getenv("LLM_MODEL", "gpt-4o-mini")))
+        self.llm_model_edit.setText(os.getenv("LLM_MODEL") or s.value("llm_model", "gpt-4o-mini"))
         self.emb_url_edit.setText(s.value("emb_url", os.getenv("EMBEDDING_BASE_URL", "")))
-        self.emb_model_edit.setText(s.value("emb_model", os.getenv("EMBEDDING_MODEL", "text-embedding-ada-002")))
+        self.emb_model_edit.setText(os.getenv("EMBEDDING_MODEL") or s.value("emb_model", "text-embedding-ada-002"))
         self.cache_dir_edit.setText(s.value("cache_dir", ".rag_cache"))
         mode = s.value("retrieval_mode", "all")
         idx = self.retrieval_combo.findData(mode)
@@ -327,3 +328,4 @@ class ConfigPanel(QWidget):
         s.setValue("cache_dir",      self.cache_dir_edit.text())
         s.setValue("retrieval_mode", self.retrieval_combo.currentData())
         s.setValue("force_workers",  self.force_workers_spin.value())
+        save_env_models(self.llm_model_edit.text(), self.emb_model_edit.text())
