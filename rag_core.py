@@ -871,6 +871,11 @@ def load_summary_prompt() -> str:
     )
 
 
+def get_summary_prompt_hash() -> str:
+    """현재 요약 프롬프트의 MD5 해시를 반환합니다. 캐시 무효화 판단에 사용됩니다."""
+    return hashlib.md5(load_summary_prompt().encode()).hexdigest()
+
+
 def prepare_notebook_summary_prompt(
     notebook_name: str, cells: list[dict], max_chars: int = 6000
 ) -> str:

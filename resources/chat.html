@@ -7,6 +7,7 @@
 <script src="js/marked.min.js"></script>
 <script src="js/highlight.min.js"></script>
 <script src="js/katex.min.js"></script>
+<script src="js/mermaid.min.js"></script>
 <style>
 /* ── Reset & Base ──────────────────────────────────────────── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -41,7 +42,26 @@ body {
   border: 1px solid #1d4ed8;
   border-radius: 12px 12px 4px 12px;
   text-align: right;
+  position: relative;
 }
+.user-copy-btn {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  background: #2a3045;
+  color: #94a3b8;
+  border: 1px solid #3a4055;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1.6;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.bubble-user:hover .user-copy-btn { opacity: 1; }
+.user-copy-btn:hover { background: #3a4055; color: #e2e8f0; }
+.user-copy-btn.copied { color: #4ade80; border-color: #4ade80; }
 .bubble-ai {
   background: #1e2330;
   border: 1px solid #2a3045;
@@ -156,6 +176,45 @@ body {
 .katex { color: #e2e8f0; font-size: 1.1em; }
 .katex-display { margin: 0.6em 0; overflow-x: auto; }
 
+/* ── Mermaid diagrams ─────────────────────────────────────── */
+.mermaid-wrapper {
+  background: #111827;
+  border: 1px solid #2a3045;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-error {
+  color: #f87171;
+  font-size: 11px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  padding: 4px;
+}
+
+/* ── Message action buttons (MD 복사) ─────────────────────── */
+.msg-actions {
+  float: right;
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+.action-btn {
+  background: #2a3045;
+  color: #94a3b8;
+  border: 1px solid #3a4055;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-family: "Pretendard","Malgun Gothic",sans-serif;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.action-btn:hover { background: #3a4055; color: #e2e8f0; }
+.action-btn.copied { color: #4ade80; border-color: #4ade80; }
+
 /* ── Streaming cursor (pure CSS animation) ─────────────────── */
 .cursor {
   display: inline-block;
@@ -175,6 +234,17 @@ body {
 <div id="chat-container"></div>
 
 <script>
+// ── Mermaid 초기화 ────────────────────────────────────────────
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontFamily: '"Pretendard","Malgun Gothic",sans-serif',
+    fontSize: 13
+  });
+}
+
 // ── KaTeX 수학 확장 (marked.js 플러그인) ─────────────────────
 function _katexRender(text, displayMode) {
   if (!window.katex) return null;
@@ -239,6 +309,23 @@ const mathExtension = {
   ]
 };
 marked.use(mathExtension);
+
+// ── Mermaid code fence 인터셉트 ───────────────────────────────
+const mermaidExtension = {
+  renderer: {
+    code(token) {
+      if (token.lang === 'mermaid') {
+        const escaped = (token.text || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        return '<div class="mermaid-wrapper"><div class="mermaid">' + escaped + '</div></div>';
+      }
+      return false;
+    }
+  }
+};
+marked.use(mermaidExtension);
 
 // ── marked.js 설정 ────────────────────────────────────────────
 marked.setOptions({
@@ -311,6 +398,70 @@ function addCopyButtons(root) {
   });
 }
 
+// ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
+function renderMermaid(root) {
+  if (!window.mermaid) return;
+  var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
+  if (!nodes.length) return;
+  nodes.forEach(function(el) {
+    var code = el.innerHTML
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+    var id = 'mermaid-' + Math.random().toString(36).slice(2);
+    mermaid.render(id, code).then(function(result) {
+      el.innerHTML = result.svg;
+      el.setAttribute('data-processed', 'true');
+    }).catch(function(err) {
+      el.innerHTML = '<div class="mermaid-error">⚠ Mermaid 오류: ' + (err.message || err) + '</div>';
+      el.setAttribute('data-processed', 'true');
+    });
+  });
+}
+
+// ── AI 메시지 액션 버튼 (MD 복사) ─────────────────────────────
+function addMsgActions(bubbleDiv, rawMarkdown) {
+  var label = bubbleDiv.querySelector('.msg-label');
+  if (!label) return;
+  if (label.querySelector('.msg-actions')) return;
+
+  var actions = document.createElement('div');
+  actions.className = 'msg-actions';
+
+  // 📋 MD 복사
+  var mdBtn = document.createElement('button');
+  mdBtn.className = 'action-btn';
+  mdBtn.textContent = 'MD';
+  mdBtn.addEventListener('click', function() {
+    copyViaConsole(rawMarkdown);
+    mdBtn.textContent = '✓ 복사됨';
+    mdBtn.classList.add('copied');
+    setTimeout(function() {
+      mdBtn.textContent = 'MD';
+      mdBtn.classList.remove('copied');
+    }, 1500);
+  });
+
+  // Text 복사
+  var txtBtn = document.createElement('button');
+  txtBtn.className = 'action-btn';
+  txtBtn.textContent = 'Text';
+  txtBtn.addEventListener('click', function() {
+    var contentEl = bubbleDiv.querySelector('.content');
+    copyViaConsole(contentEl ? contentEl.innerText : '');
+    txtBtn.textContent = '✓ 복사됨';
+    txtBtn.classList.add('copied');
+    setTimeout(function() {
+      txtBtn.textContent = 'Text';
+      txtBtn.classList.remove('copied');
+    }, 1500);
+  });
+
+  actions.appendChild(mdBtn);
+  actions.appendChild(txtBtn);
+  label.appendChild(actions);
+}
+
 // ── Public API (Python에서 runJavaScript로 호출) ──────────────
 
 /** 사용자 메시지 버블 추가 */
@@ -322,6 +473,27 @@ function appendUserMessage(text) {
       '<div class="msg-label">\uD83D\uDC64 사용자</div>' +
       '<div class="content">' + escapeHtml(text) + '</div>' +
     '</div>';
+
+  // 📋 복사 버튼 추가 (absolute 배치 — 버블 레이아웃에 영향 없음)
+  const bubble = msg.querySelector('.bubble-user');
+
+  const txtBtn = document.createElement('button');
+  txtBtn.className = 'user-copy-btn';
+  txtBtn.textContent = '\uD83D\uDCCB';
+  txtBtn.title = '텍스트 복사';
+  txtBtn.addEventListener('click', function() {
+    const contentEl = bubble.querySelector('.content');
+    copyViaConsole(contentEl ? contentEl.innerText : '');
+    txtBtn.textContent = '\u2713';
+    txtBtn.classList.add('copied');
+    setTimeout(function() {
+      txtBtn.textContent = '\uD83D\uDCCB';
+      txtBtn.classList.remove('copied');
+    }, 1500);
+  });
+
+  bubble.appendChild(txtBtn);
+
   container.appendChild(msg);
   trimMessages();
   scrollToBottom(true);
@@ -356,11 +528,15 @@ function renderStreamingBuffer() {
 /** 스트리밍 완료 — 최종 렌더링 (커서 제거) */
 function finishAiMessage() {
   if (!currentAiBubble) return;
-  currentAiBubble.innerHTML = marked.parse(streamingBuffer);
+  var rawMd = streamingBuffer;
+  var bubbleDiv = currentAiBubble.closest('.bubble-ai');
+  currentAiBubble.innerHTML = marked.parse(rawMd);
   currentAiBubble.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
     hljs.highlightElement(el);
   });
   addCopyButtons(currentAiBubble);
+  renderMermaid(currentAiBubble);
+  if (bubbleDiv) addMsgActions(bubbleDiv, rawMd);
   currentAiBubble.removeAttribute('id');
   currentAiBubble = null;
   streamingBuffer = '';
@@ -383,6 +559,9 @@ function appendFinishedAiMessage(text) {
     hljs.highlightElement(el);
   });
   addCopyButtons(msg);
+  renderMermaid(msg);
+  var bubbleDiv = msg.querySelector('.bubble-ai');
+  if (bubbleDiv) addMsgActions(bubbleDiv, text);
   trimMessages();
   scrollToBottom(true);
 }

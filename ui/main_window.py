@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
             self._force_worker.start()
             return
 
-        # 일반 RAG 쿼리
+        # 일반 RAG 쿼리 (/lec 포함)
         if not self.state.rag_ready:
             QMessageBox.information(self, "알림", "먼저 RAG 시스템을 구축해 주세요.")
             return
@@ -268,13 +268,13 @@ class MainWindow(QMainWindow):
         conversation_history = self.chat_tab.get_history_for_llm(max_turns=3)
 
         self._llm_worker = LLMWorker(
-            agent           = self.state.agent,
-            llm             = self.state.llm,
-            sys_prompt      = self.state.sys_prompt,
-            llm_only_prompt = self.state.llm_only_prompt,
-            query           = query,
-            retrieval_mode  = retrieval_mode,
-            is_suggested    = is_suggested,
+            agent                = self.state.agent,
+            llm                  = self.state.llm,
+            sys_prompt           = self.state.sys_prompt,
+            llm_only_prompt      = self.state.llm_only_prompt,
+            query                = query,
+            retrieval_mode       = retrieval_mode,
+            is_suggested         = is_suggested,
             conversation_history = conversation_history,
         )
         self._llm_worker.status_signal.connect(self.chat_tab.status_label.setText)

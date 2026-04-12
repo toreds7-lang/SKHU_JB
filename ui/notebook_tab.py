@@ -107,7 +107,8 @@ class _SummaryLinkPage(QWebEnginePage):
             QApplication.clipboard().setText(message[len("__COPY__:"):])
 
 
-_SUMMARIZED_COLOR = QColor("#60a5fa")   # 파란색 — 요약 완료
+_SUMMARIZED_COLOR = QColor("#60a5fa")   # 파란색 — 요약 완료 (현재 프롬프트)
+_STALE_COLOR      = QColor("#f59e0b")   # 황색 — 이전 프롬프트로 생성된 요약
 _DEFAULT_COLOR    = QColor("#e2e8f0")   # 기본 텍스트 색
 
 
@@ -119,6 +120,7 @@ class NotebookTab(QWidget):
         super().__init__()
         self._cells: list[dict] = []
         self._summaries: dict[str, str] = {}   # in-memory cache
+        self._stale_summaries: set[str] = set()  # 이전 프롬프트로 생성된 요약
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
         self._summary_font_size = 13
@@ -156,7 +158,7 @@ class NotebookTab(QWidget):
         left_layout.addWidget(self.select_all_cb)
 
         # 범례
-        legend = QLabel("🔵 요약 완료")
+        legend = QLabel("🔵 요약 완료  🟡 이전 프롬프트")
         legend.setStyleSheet("color: #64748b; font-size: 10px;")
         left_layout.addWidget(legend)
 
@@ -351,9 +353,13 @@ class NotebookTab(QWidget):
 
     def _update_generate_btn_label(self):
         checked = self._get_checked_names()
-        uncached = [n for n in checked if n not in self._summaries]
-        if uncached:
-            self.generate_btn.setText(f"📝 요약 생성 ({len(uncached)}개)")
+        # 캐시 없음 + stale(이전 프롬프트) 모두 재생성 대상
+        to_gen = [
+            n for n in checked
+            if n not in self._summaries or n in self._stale_summaries
+        ]
+        if to_gen:
+            self.generate_btn.setText(f"📝 요약 생성 ({len(to_gen)}개)")
         else:
             self.generate_btn.setText("📝 요약 생성")
 
@@ -383,7 +389,8 @@ class NotebookTab(QWidget):
         except Exception:
             return
 
-        from rag_core import get_file_md5
+        from rag_core import get_file_md5, get_summary_prompt_hash
+        current_prompt_hash = get_summary_prompt_hash()
         for name, entry in data.items():
             if name in self._summaries:
                 continue  # 이미 인메모리 캐시에 있으면 스킵
@@ -392,6 +399,9 @@ class NotebookTab(QWidget):
                 current_hash = get_file_md5(nb_path)
                 if entry.get("hash") == current_hash:
                     self._summaries[name] = entry["summary"]
+                    if entry.get("prompt_hash") != current_prompt_hash:
+                        # 노트북 파일은 동일하지만 프롬프트가 변경됨 → stale 표시
+                        self._stale_summaries.add(name)
 
     def _save_summary_to_cache(self, notebook_name: str, summary: str):
         """하나의 요약을 디스크 캐시에 저장"""
@@ -407,14 +417,20 @@ class NotebookTab(QWidget):
             except Exception:
                 data = {}
 
-        # 파일 해시 계산
+        # 파일 해시 및 프롬프트 해시 계산
         nb_path = self._get_nb_path(notebook_name)
         file_hash = ""
         if nb_path and os.path.exists(nb_path):
-            from rag_core import get_file_md5
+            from rag_core import get_file_md5, get_summary_prompt_hash
             file_hash = get_file_md5(nb_path)
+        else:
+            from rag_core import get_summary_prompt_hash
 
-        data[notebook_name] = {"hash": file_hash, "summary": summary}
+        data[notebook_name] = {
+            "hash": file_hash,
+            "prompt_hash": get_summary_prompt_hash(),
+            "summary": summary,
+        }
 
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -424,7 +440,10 @@ class NotebookTab(QWidget):
     def _update_all_indicators(self):
         for i in range(self.nb_list.count()):
             item = self.nb_list.item(i)
-            if item.text() in self._summaries:
+            name = item.text()
+            if name in self._stale_summaries:
+                item.setForeground(_STALE_COLOR)
+            elif name in self._summaries:
                 item.setForeground(_SUMMARIZED_COLOR)
             else:
                 item.setForeground(_DEFAULT_COLOR)
@@ -433,7 +452,11 @@ class NotebookTab(QWidget):
         for i in range(self.nb_list.count()):
             item = self.nb_list.item(i)
             if item.text() == notebook_name:
-                item.setForeground(_SUMMARIZED_COLOR)
+                # stale이면 황색, 아니면 파란색
+                if notebook_name in self._stale_summaries:
+                    item.setForeground(_STALE_COLOR)
+                else:
+                    item.setForeground(_SUMMARIZED_COLOR)
                 break
 
     # ── 아이템 클릭 → 셀 보기 ────────────────────────────────────────────────
@@ -455,10 +478,10 @@ class NotebookTab(QWidget):
 
     def _on_generate_click(self):
         checked = self._get_checked_names()
-        # 캐시에 없는 노트북만 요약 요청
+        # 캐시에 없거나 stale(이전 프롬프트)인 노트북 요약 요청
         to_generate = {}
         for name in checked:
-            if name not in self._summaries:
+            if name not in self._summaries or name in self._stale_summaries:
                 nb_cells = sorted(
                     [c for c in self._cells if c["notebook"] == name],
                     key=lambda x: x["cell_idx"]
@@ -491,6 +514,7 @@ class NotebookTab(QWidget):
         self._summaries = {
             k: v for k, v in self._summaries.items() if k in new_nbs
         }
+        self._stale_summaries = {k for k in self._stale_summaries if k in new_nbs}
 
         # 디스크 캐시에서 유효한 요약 로드
         self._load_summary_cache()
@@ -524,6 +548,7 @@ class NotebookTab(QWidget):
     def set_summary(self, notebook_name: str, summary: str):
         """워커에서 호출: 하나의 노트북 요약 결과를 캐시 + 표시"""
         self._summaries[notebook_name] = summary
+        self._stale_summaries.discard(notebook_name)  # 새 요약이므로 stale 해제
         self._save_summary_to_cache(notebook_name, summary)
         self._update_item_indicator(notebook_name)
         self._rebuild_summary_view()
@@ -581,8 +606,9 @@ class NotebookTab(QWidget):
                 has_summary = True
                 escaped = json.dumps(name)
                 md_escaped = json.dumps(self._summaries[name])
+                is_stale = str(name in self._stale_summaries).lower()
                 self._run_summary_js(
-                    f"addSummaryCard({escaped},{md_escaped})"
+                    f"addSummaryCard({escaped},{md_escaped},{is_stale})"
                 )
 
         if not has_summary:
