@@ -23,7 +23,8 @@ from ui.notebook_tab   import NotebookTab
 from ui.dir_tab        import DirTab
 from workers.llm_worker import (
     RagBuildWorker, LLMWorker, ForceWorker,
-    ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker
+    ExampleQuestionsWorker, SuggestedQueriesWorker, SummaryWorker,
+    NotebookChatWorker,
 )
 
 
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         self._eq_worker:      ExampleQuestionsWorker | None = None
         self._sq_worker:      SuggestedQueriesWorker | None = None
         self._summary_worker: SummaryWorker | None = None
+        self._nb_chat_worker: NotebookChatWorker | None = None
         self._last_config:    dict = {}
         self._init_ui()
         self._connect_signals()
@@ -97,9 +99,9 @@ class MainWindow(QMainWindow):
         self.dir_tab      = DirTab()
 
         self.tab_widget.addTab(self.chat_tab,     "💬  채팅")
+        self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
-        self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
 
         splitter.addWidget(self.tab_widget)
@@ -125,6 +127,8 @@ class MainWindow(QMainWindow):
         self.chat_tab.llm_stop_requested.connect(self._on_llm_stop)
         self.notebook_tab.summary_requested.connect(self._on_summary_requested)
         self.notebook_tab.stop_requested.connect(self._on_summary_stop)
+        self.notebook_tab.notebook_chat_requested.connect(self._on_notebook_chat)
+        self.notebook_tab.notebook_chat_stop.connect(self._on_notebook_chat_stop)
 
     # ── RAG 빌드 ─────────────────────────────────────────────────────────────
 
@@ -337,6 +341,60 @@ class MainWindow(QMainWindow):
         if self._summary_worker and self._summary_worker.isRunning():
             self._summary_worker.stop()
 
+    # ── 노트북 셀 채팅 ──────────────────────────────────────────────────────────
+
+    def _on_notebook_chat(self, question: str, selected_cells: list,
+                          notebook_name: str, summary: str,
+                          conversation_history: list):
+        if not self.state.llm:
+            self.notebook_tab.on_chat_error("LLM이 설정되지 않았습니다.")
+            return
+        if self._nb_chat_worker and self._nb_chat_worker.isRunning():
+            return
+
+        from rag_core import load_notebook_chat_prompt, prepare_notebook_chat_prompt
+
+        sys_prompt = load_notebook_chat_prompt()
+
+        mode = getattr(self.notebook_tab, "_context_mode", "summary")
+        all_cells = None
+        if mode == "full":
+            all_cells = sorted(
+                [c for c in self.notebook_tab._cells if c["notebook"] == notebook_name],
+                key=lambda x: x["cell_idx"],
+            )
+
+        user_prompt = prepare_notebook_chat_prompt(
+            notebook_name,
+            selected_cells,
+            question,
+            context_mode=mode,
+            summary=summary,
+            all_cells=all_cells,
+        )
+
+        self._nb_chat_worker = NotebookChatWorker(
+            llm=self.state.llm,
+            system_prompt=sys_prompt,
+            user_prompt=user_prompt,
+            conversation_history=conversation_history,
+        )
+
+        # 스트리밍 시작 알림
+        self.notebook_tab.on_chat_streaming_start()
+
+        # 대기 중인 질문을 기록 (on_chat_finished에서 히스토리에 추가)
+        self.notebook_tab._pending_chat_question = question
+
+        self._nb_chat_worker.chunk_received.connect(self.notebook_tab.on_chat_chunk)
+        self._nb_chat_worker.finished_signal.connect(self.notebook_tab.on_chat_finished)
+        self._nb_chat_worker.error_signal.connect(self.notebook_tab.on_chat_error)
+        self._nb_chat_worker.start()
+
+    def _on_notebook_chat_stop(self):
+        if self._nb_chat_worker and self._nb_chat_worker.isRunning():
+            self._nb_chat_worker.stop()
+
     # ── 파일 변경 감지 ────────────────────────────────────────────────────────
 
     def _check_dir_hash(self):
@@ -356,7 +414,8 @@ class MainWindow(QMainWindow):
         self.config_panel.save_settings()
         # 실행 중인 워커 정리
         for worker in [self._rag_worker, self._llm_worker, self._force_worker,
-                       self._eq_worker, self._sq_worker, self._summary_worker]:
+                       self._eq_worker, self._sq_worker, self._summary_worker,
+                       self._nb_chat_worker]:
             if worker and worker.isRunning():
                 worker.quit()
                 worker.wait(2000)

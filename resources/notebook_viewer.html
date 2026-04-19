@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="css/katex.min.css">
+<script src="js/marked.min.js"></script>
+<script src="js/highlight.min.js"></script>
+<script src="js/katex.min.js"></script>
+<script src="js/mermaid.min.js"></script>
+<style>
+/* ── Reset & Base ──────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0d0f14;
+  color: #e2e8f0;
+  font-family: "Pretendard","Malgun Gothic","Apple SD Gothic Neo","Noto Sans CJK KR",sans-serif;
+  font-size: 13px;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0d0f14; }
+::-webkit-scrollbar-thumb { background: #2a3045; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ── Toolbar ──────────────────────────────────────────────── */
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #111827;
+  border-bottom: 1px solid #2a3045;
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+.toolbar-btn {
+  background: #2a3045;
+  color: #94a3b8;
+  border: 1px solid #3a4055;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.toolbar-btn:hover { background: #3a4055; color: #e2e8f0; }
+.toolbar-btn.active { background: #4f8ef7; color: #fff; border-color: #4f8ef7; }
+.sel-count {
+  color: #60a5fa;
+  font-weight: 600;
+  min-width: 80px;
+}
+
+/* ── Cell container ───────────────────────────────────────── */
+#cells-container {
+  padding: 8px 12px;
+}
+
+/* ── Notebook cell ────────────────────────────────────────── */
+.nb-cell {
+  position: relative;
+  margin-bottom: 4px;
+  border: 1px solid #1e2330;
+  border-radius: 6px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.nb-cell:hover {
+  border-color: #2a3045;
+}
+.nb-cell.selected {
+  border-color: #4f8ef7;
+  background: #0f1a2e;
+}
+
+/* ── Cell header ──────────────────────────────────────────── */
+.cell-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: #111827;
+  border-radius: 6px 6px 0 0;
+  border-bottom: 1px solid #1e2330;
+  cursor: pointer;
+  user-select: none;
+}
+.cell-cb {
+  width: 15px;
+  height: 15px;
+  accent-color: #4f8ef7;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.cell-type-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.cell-type-badge.code {
+  background: #7c2d12;
+  color: #fdba74;
+}
+.cell-type-badge.markdown {
+  background: #3b0764;
+  color: #c4b5fd;
+}
+.cell-idx {
+  font-size: 10px;
+  color: #64748b;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+.cell-copy-btn {
+  margin-left: auto;
+  background: #2a3045;
+  color: #94a3b8;
+  border: 1px solid #3a4055;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.nb-cell:hover .cell-copy-btn { opacity: 1; }
+.cell-copy-btn:hover { background: #3a4055; color: #e2e8f0; }
+.cell-copy-btn.copied { color: #4ade80; border-color: #4ade80; }
+
+/* ── Cell body ────────────────────────────────────────────── */
+.cell-body {
+  padding: 8px 10px;
+}
+
+/* ── Code cell ────────────────────────────────────────────── */
+.nb-cell.cell-code {
+  border-left: 3px solid #fb923c;
+}
+.nb-cell.cell-code.selected {
+  border-left: 3px solid #4f8ef7;
+}
+.cell-body.code-body {
+  background: #0a0e17;
+  border-radius: 0 0 6px 6px;
+  padding: 0;
+}
+.cell-body.code-body pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: none;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.cell-body.code-body pre code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  background: none;
+  color: #abb2bf;
+  padding: 0;
+}
+
+/* ── Markdown cell (rendered) ─────────────────────────────── */
+.nb-cell.cell-markdown {
+  border-left: 3px solid #a78bfa;
+}
+.nb-cell.cell-markdown.selected {
+  border-left: 3px solid #4f8ef7;
+}
+.cell-body.md-body {
+  padding: 8px 12px;
+  line-height: 1.7;
+}
+.md-body p { margin: 0.4em 0; }
+.md-body pre {
+  position: relative;
+  background: #0a0e17;
+  border-left: 3px solid #f97316;
+  border-radius: 0 4px 4px 0;
+  padding: 8px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0.5em 0;
+}
+.md-body pre code {
+  background: none; color: inherit; padding: 0; border-radius: 0; font-size: 11px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+.md-body code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+}
+.md-body :not(pre) > code {
+  background: #0d1117; color: #f97316; padding: 1px 4px; border-radius: 3px; font-size: 12px;
+}
+.md-body table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.md-body th, .md-body td {
+  border: 1px solid #2a3045; padding: 4px 8px; font-size: 12px; text-align: left;
+}
+.md-body th { background: #1e2330; color: #94a3b8; font-weight: 600; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+  color: #60a5fa; margin: 0.6em 0 0.3em;
+}
+.md-body h1 { font-size: 1.4em; }
+.md-body h2 { font-size: 1.2em; }
+.md-body h3 { font-size: 1.08em; }
+.md-body ul, .md-body ol { padding-left: 1.5em; margin: 0.3em 0; }
+.md-body li { margin: 0.15em 0; }
+.md-body hr { border: none; border-top: 1px solid #2a3045; margin: 0.6em 0; }
+.md-body blockquote {
+  border-left: 3px solid #a78bfa; padding-left: 10px; color: #94a3b8; margin: 0.4em 0;
+}
+.md-body a { color: #60a5fa; text-decoration: none; }
+.md-body a:hover { text-decoration: underline; }
+.md-body strong { color: #f1f5f9; }
+.md-body img { max-width: 100%; border-radius: 4px; }
+
+/* ── Highlight.js dark theme (Atom One Dark) ──────────────── */
+.hljs { color: #abb2bf; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-link { color: #c678dd; }
+.hljs-function .hljs-keyword { color: #c678dd; }
+.hljs-string, .hljs-addition { color: #98c379; }
+.hljs-number, .hljs-attr { color: #d19a66; }
+.hljs-comment, .hljs-quote, .hljs-deletion { color: #5c6370; font-style: italic; }
+.hljs-title, .hljs-title.function_ { color: #61afef; }
+.hljs-built_in, .hljs-type { color: #e5c07b; }
+.hljs-variable, .hljs-template-variable { color: #e06c75; }
+.hljs-name, .hljs-selector-id, .hljs-selector-class { color: #e06c75; }
+.hljs-meta { color: #61afef; }
+.hljs-params { color: #abb2bf; }
+.hljs-subst { color: #e06c75; }
+.hljs-regexp { color: #98c379; }
+.hljs-symbol { color: #56b6c2; }
+.hljs-doctag { color: #c678dd; }
+
+/* ── KaTeX ────────────────────────────────────────────────── */
+.katex { color: #e2e8f0; font-size: 1.1em; }
+.katex-display { margin: 0.6em 0; overflow-x: auto; }
+
+/* ── Mermaid ──────────────────────────────────────────────── */
+.mermaid-wrapper {
+  background: #111827; border: 1px solid #2a3045; border-radius: 4px;
+  padding: 12px; margin: 0.5em 0; overflow-x: auto; text-align: center;
+}
+.mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-error {
+  color: #f87171; font-size: 11px;
+  font-family: "JetBrains Mono", Consolas, monospace; padding: 4px;
+}
+
+/* ── Placeholder ──────────────────────────────────────────── */
+.placeholder {
+  color: #64748b; font-size: 12px; text-align: center; padding: 40px 20px;
+}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <button class="toolbar-btn" id="select-all-btn" onclick="toggleSelectAll()">전체 선택</button>
+  <span class="sel-count" id="sel-count">0개 선택</span>
+</div>
+
+<div id="cells-container">
+  <div class="placeholder">노트북을 선택하세요.</div>
+</div>
+
+<script>
+// ── Mermaid 초기화 ────────────────────────────────────────────
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false, theme: 'dark', securityLevel: 'loose',
+    fontFamily: '"Pretendard","Malgun Gothic",sans-serif', fontSize: 13
+  });
+}
+
+// ── KaTeX 수학 확장 ──────────────────────────────────────────
+function _katexRender(text, displayMode) {
+  if (!window.katex) return null;
+  try { return katex.renderToString(text, { displayMode: displayMode, throwOnError: false }); }
+  catch(e) { return null; }
+}
+var mathExtension = {
+  extensions: [
+    { name:'displayMath', level:'block',
+      start(src){return src.indexOf('$$');},
+      tokenizer(src){var m=src.match(/^\$\$([\s\S]*?)\$\$/);if(m)return{type:'displayMath',raw:m[0],text:m[1].trim()};},
+      renderer(token){return _katexRender(token.text,true)||'<span>'+token.raw+'</span>';}
+    },
+    { name:'displayMathBracket', level:'block',
+      start(src){return src.indexOf('\\[');},
+      tokenizer(src){var m=src.match(/^\\\[([\s\S]*?)\\\]/);if(m)return{type:'displayMathBracket',raw:m[0],text:m[1].trim()};},
+      renderer(token){return _katexRender(token.text,true)||'<span>'+token.raw+'</span>';}
+    },
+    { name:'inlineMath', level:'inline',
+      start(src){return src.indexOf('$');},
+      tokenizer(src){var m=src.match(/^\$((?:[^$\\\n]|\\.)+?)\$/);if(m)return{type:'inlineMath',raw:m[0],text:m[1].trim()};},
+      renderer(token){return _katexRender(token.text,false)||'<span>'+token.raw+'</span>';}
+    },
+    { name:'inlineMathParen', level:'inline',
+      start(src){return src.indexOf('\\(');},
+      tokenizer(src){var m=src.match(/^\\\(((?:[^\\]|\\.)*?)\\\)/);if(m)return{type:'inlineMathParen',raw:m[0],text:m[1].trim()};},
+      renderer(token){return _katexRender(token.text,false)||'<span>'+token.raw+'</span>';}
+    }
+  ]
+};
+marked.use(mathExtension);
+
+var mermaidExtension = {
+  renderer: {
+    code(token) {
+      if (token.lang === 'mermaid') {
+        var escaped = (token.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return '<div class="mermaid-wrapper"><div class="mermaid">'+escaped+'</div></div>';
+      }
+      return false;
+    }
+  }
+};
+marked.use(mermaidExtension);
+
+marked.setOptions({
+  highlight: function(code, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, { language: lang }).value; } catch(e) {}
+    }
+    try { return hljs.highlightAuto(code).value; } catch(e) {}
+    return code;
+  },
+  breaks: true, gfm: true
+});
+
+// ── State ────────────────────────────────────────────────────
+var cellsData = [];       // [{cell_idx, cell_type, source}, ...]
+var lastCheckedIdx = -1;  // for shift-click range selection
+
+function copyViaConsole(text) {
+  console.log("__COPY__:" + text);
+}
+
+// ── Mermaid render helper ────────────────────────────────────
+function renderMermaid(root) {
+  if (!window.mermaid) return;
+  var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
+  nodes.forEach(function(el) {
+    var code = el.innerHTML.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+    var id = 'mermaid-' + Math.random().toString(36).slice(2);
+    mermaid.render(id, code).then(function(result) {
+      el.innerHTML = result.svg;
+      el.setAttribute('data-processed','true');
+    }).catch(function(err) {
+      el.innerHTML = '<div class="mermaid-error">\u26a0 Mermaid: '+(err.message||err)+'</div>';
+      el.setAttribute('data-processed','true');
+    });
+  });
+}
+
+// ── Code copy buttons inside rendered markdown ───────────────
+function addCopyButtons(root) {
+  root.querySelectorAll('pre > code').forEach(function(codeEl) {
+    var pre = codeEl.parentElement;
+    if (pre.querySelector('.copy-btn')) return;
+    var btn = document.createElement('button');
+    btn.className = 'cell-copy-btn';
+    btn.style.opacity = '1';
+    btn.style.position = 'absolute';
+    btn.style.top = '4px';
+    btn.style.right = '4px';
+    btn.textContent = '\ubcf5\uc0ac';
+    pre.style.position = 'relative';
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      copyViaConsole(codeEl.textContent);
+      btn.textContent = '\u2713';
+      btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent='\ubcf5\uc0ac'; btn.classList.remove('copied'); }, 1500);
+    });
+    pre.appendChild(btn);
+  });
+}
+
+// ── Update selection count ───────────────────────────────────
+function updateSelCount() {
+  var count = document.querySelectorAll('.cell-cb:checked').length;
+  document.getElementById('sel-count').textContent = count + '\uac1c \uc120\ud0dd';
+  var btn = document.getElementById('select-all-btn');
+  btn.textContent = (count === cellsData.length && cellsData.length > 0) ? '\uc804\uccb4 \ud574\uc81c' : '\uc804\uccb4 \uc120\ud0dd';
+  btn.classList.toggle('active', count > 0);
+}
+
+// ── Toggle select all ────────────────────────────────────────
+function toggleSelectAll() {
+  var cbs = document.querySelectorAll('.cell-cb');
+  var allChecked = Array.from(cbs).every(function(cb) { return cb.checked; });
+  cbs.forEach(function(cb) {
+    cb.checked = !allChecked;
+    cb.closest('.nb-cell').classList.toggle('selected', !allChecked);
+  });
+  updateSelCount();
+}
+
+// ── Checkbox change with Shift-click ─────────────────────────
+function onCellCheck(e, idx) {
+  var cell = e.target.closest('.nb-cell');
+  cell.classList.toggle('selected', e.target.checked);
+
+  if (e.shiftKey && lastCheckedIdx >= 0 && lastCheckedIdx !== idx) {
+    var lo = Math.min(lastCheckedIdx, idx);
+    var hi = Math.max(lastCheckedIdx, idx);
+    var checked = e.target.checked;
+    var cells = document.querySelectorAll('.nb-cell');
+    for (var i = lo; i <= hi; i++) {
+      var cb = cells[i].querySelector('.cell-cb');
+      cb.checked = checked;
+      cells[i].classList.toggle('selected', checked);
+    }
+  }
+  lastCheckedIdx = idx;
+  updateSelCount();
+}
+
+// ── Header click toggles checkbox ────────────────────────────
+function onHeaderClick(e, idx) {
+  if (e.target.classList.contains('cell-cb') || e.target.classList.contains('cell-copy-btn')) return;
+  var cell = e.target.closest('.nb-cell');
+  var cb = cell.querySelector('.cell-cb');
+  cb.checked = !cb.checked;
+  cell.classList.toggle('selected', cb.checked);
+  if (e.shiftKey && lastCheckedIdx >= 0 && lastCheckedIdx !== idx) {
+    var lo = Math.min(lastCheckedIdx, idx);
+    var hi = Math.max(lastCheckedIdx, idx);
+    var cells = document.querySelectorAll('.nb-cell');
+    for (var i = lo; i <= hi; i++) {
+      var cb2 = cells[i].querySelector('.cell-cb');
+      cb2.checked = cb.checked;
+      cells[i].classList.toggle('selected', cb.checked);
+    }
+  }
+  lastCheckedIdx = idx;
+  updateSelCount();
+}
+
+// ── Public API ───────────────────────────────────────────────
+
+function loadCells(cellsJson) {
+  cellsData = typeof cellsJson === 'string' ? JSON.parse(cellsJson) : cellsJson;
+  lastCheckedIdx = -1;
+  var container = document.getElementById('cells-container');
+  container.innerHTML = '';
+
+  if (!cellsData.length) {
+    container.innerHTML = '<div class="placeholder">\uc140\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>';
+    updateSelCount();
+    return;
+  }
+
+  cellsData.forEach(function(cell, i) {
+    var isCode = cell.cell_type === 'code';
+    var div = document.createElement('div');
+    div.className = 'nb-cell ' + (isCode ? 'cell-code' : 'cell-markdown');
+    div.setAttribute('data-idx', cell.cell_idx);
+
+    // Header
+    var header = document.createElement('div');
+    header.className = 'cell-header';
+    header.addEventListener('click', function(e) { onHeaderClick(e, i); });
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'cell-cb';
+    cb.addEventListener('change', function(e) { onCellCheck(e, i); });
+    cb.addEventListener('click', function(e) { e.stopPropagation(); });
+    header.appendChild(cb);
+
+    var badge = document.createElement('span');
+    badge.className = 'cell-type-badge ' + (isCode ? 'code' : 'markdown');
+    badge.textContent = isCode ? 'Code' : 'Markdown';
+    header.appendChild(badge);
+
+    var idxLabel = document.createElement('span');
+    idxLabel.className = 'cell-idx';
+    idxLabel.textContent = '[' + cell.cell_idx + ']';
+    header.appendChild(idxLabel);
+
+    // Copy source button
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'cell-copy-btn';
+    copyBtn.textContent = '\ubcf5\uc0ac';
+    copyBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      copyViaConsole(cell.source);
+      copyBtn.textContent = '\u2713';
+      copyBtn.classList.add('copied');
+      setTimeout(function(){ copyBtn.textContent='\ubcf5\uc0ac'; copyBtn.classList.remove('copied'); }, 1500);
+    });
+    header.appendChild(copyBtn);
+
+    div.appendChild(header);
+
+    // Body
+    var body = document.createElement('div');
+
+    if (isCode) {
+      body.className = 'cell-body code-body';
+      var pre = document.createElement('pre');
+      var code = document.createElement('code');
+      code.className = 'language-python';
+      code.textContent = cell.source;
+      pre.appendChild(code);
+      body.appendChild(pre);
+      hljs.highlightElement(code);
+    } else {
+      body.className = 'cell-body md-body';
+      body.innerHTML = marked.parse(cell.source);
+      body.querySelectorAll('pre code:not(.hljs)').forEach(function(el) {
+        hljs.highlightElement(el);
+      });
+      addCopyButtons(body);
+      renderMermaid(body);
+    }
+
+    div.appendChild(body);
+    container.appendChild(div);
+  });
+
+  updateSelCount();
+}
+
+function clearCells() {
+  cellsData = [];
+  lastCheckedIdx = -1;
+  document.getElementById('cells-container').innerHTML =
+    '<div class="placeholder">\ub178\ud2b8\ubd81\uc744 \uc120\ud0dd\ud558\uc138\uc694.</div>';
+  updateSelCount();
+}
+
+function getSelectedCells() {
+  var result = [];
+  var cells = document.querySelectorAll('.nb-cell');
+  cells.forEach(function(el, i) {
+    if (el.querySelector('.cell-cb:checked') && i < cellsData.length) {
+      result.push(cellsData[i]);
+    }
+  });
+  return JSON.stringify(result);
+}
+
+function getSelectedCellIndices() {
+  var result = [];
+  var cells = document.querySelectorAll('.nb-cell');
+  cells.forEach(function(el, i) {
+    if (el.querySelector('.cell-cb:checked') && i < cellsData.length) {
+      result.push(cellsData[i].cell_idx);
+    }
+  });
+  return JSON.stringify(result);
+}
+
+function selectAll() {
+  document.querySelectorAll('.cell-cb').forEach(function(cb) {
+    cb.checked = true;
+    cb.closest('.nb-cell').classList.add('selected');
+  });
+  updateSelCount();
+}
+
+function deselectAll() {
+  document.querySelectorAll('.cell-cb').forEach(function(cb) {
+    cb.checked = false;
+    cb.closest('.nb-cell').classList.remove('selected');
+  });
+  updateSelCount();
+}
+
+function setFontSize(px) {
+  document.body.style.fontSize = px + 'px';
+}
+</script>
+</body>
+</html>

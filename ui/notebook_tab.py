@@ -1,7 +1,8 @@
 """
-NotebookTab - 노트북 뷰어 + 요약 탭
+NotebookTab - 노트북 뷰어 + 셀 채팅 + 요약 탭
 좌측: 체크박스 노트북 목록 + 요약 생성 버튼
-우측: 셀 보기 / 요약 보기 전환
+우측: 셀+채팅 보기 / 요약 보기 전환
+  - 셀+채팅: 좌측 QWebEngineView(notebook_viewer.html) + 우측 채팅 패널
 """
 
 import json
@@ -11,8 +12,9 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QScrollArea, QFrame, QTextEdit, QSizePolicy,
+    QListWidgetItem, QFrame, QSizePolicy,
     QPushButton, QProgressBar, QSplitter, QStackedWidget, QCheckBox,
+    QPlainTextEdit, QApplication,
 )
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut, QDesktopServices
@@ -20,54 +22,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
 
-class CellWidget(QFrame):
-    """개별 셀 표시 위젯"""
-    def __init__(self, cell: dict):
-        super().__init__()
-        self.setFrameShape(QFrame.Shape.NoFrame)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(2)
-
-        # 헤더 레이블
-        icon = "🟠" if cell["cell_type"] == "code" else "🟣"
-        header = QLabel(f"{icon}  셀 #{cell['cell_idx']}  [{cell['cell_type']}]")
-        header.setStyleSheet(
-            "color: #475569; font-size: 10px; "
-            "font-family: 'JetBrains Mono', Consolas, monospace;"
-        )
-        layout.addWidget(header)
-
-        # 셀 내용
-        text_edit = QTextEdit()
-        text_edit.setReadOnly(True)
-        text_edit.setPlainText(cell["source"])
-        text_edit.setFont(QFont("JetBrains Mono, Consolas, Courier New", 11))
-        text_edit.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        # 내용에 맞게 높이 조정 (최소 40, 최대 400)
-        lines = cell["source"].count("\n") + 1
-        height = min(max(lines * 20 + 16, 40), 400)
-        text_edit.setFixedHeight(height)
-
-        if cell["cell_type"] == "code":
-            text_edit.setStyleSheet(
-                "QTextEdit { background: #111827; color: #f8f8f2; "
-                "border-left: 3px solid #fb923c; border-top: none; "
-                "border-right: none; border-bottom: none; "
-                "border-radius: 0 6px 6px 0; padding: 6px 8px; }"
-            )
-        else:
-            text_edit.setStyleSheet(
-                "QTextEdit { background: #111827; color: #c4b5fd; "
-                "border-left: 3px solid #a78bfa; border-top: none; "
-                "border-right: none; border-bottom: none; "
-                "border-radius: 0 6px 6px 0; padding: 6px 8px; }"
-            )
-        layout.addWidget(text_edit)
-
+# ── 스타일 상수 ──────────────────────────────────────────────────────────────
 
 _BTN_STYLE = (
     "QPushButton { background: #4f8ef7; color: #fff; border: none; "
@@ -78,6 +33,17 @@ _BTN_STYLE = (
 _STOP_BTN_STYLE = (
     "QPushButton { background: #dc2626; color: #fff; border: none; "
     "border-radius: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; }"
+    "QPushButton:hover { background: #b91c1c; }"
+)
+_SEND_BTN_STYLE = (
+    "QPushButton { background: #4f8ef7; color: #fff; border: none; "
+    "border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; }"
+    "QPushButton:hover { background: #3b7be0; }"
+    "QPushButton:disabled { background: #334155; color: #64748b; }"
+)
+_CHAT_STOP_BTN_STYLE = (
+    "QPushButton { background: #dc2626; color: #fff; border: none; "
+    "border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 600; }"
     "QPushButton:hover { background: #b91c1c; }"
 )
 _TOGGLE_ACTIVE = (
@@ -91,41 +57,129 @@ _TOGGLE_INACTIVE = (
 )
 
 
-class _SummaryLinkPage(QWebEnginePage):
+# ── QWebEnginePage: 외부 링크 + 클립보드 ──────────────────────────────────────
+
+class _LinkPage(QWebEnginePage):
     """외부 링크 → 시스템 브라우저, __COPY__ → 클립보드"""
 
     def acceptNavigationRequest(self, url, nav_type, is_main):
         if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
-            from PyQt6.QtGui import QDesktopServices
             QDesktopServices.openUrl(url)
             return False
         return super().acceptNavigationRequest(url, nav_type, is_main)
 
     def javaScriptConsoleMessage(self, level, message, line, source):
         if message.startswith("__COPY__:"):
-            from PyQt6.QtWidgets import QApplication
             QApplication.clipboard().setText(message[len("__COPY__:"):])
 
 
-_SUMMARIZED_COLOR = QColor("#60a5fa")   # 파란색 — 요약 완료 (현재 프롬프트)
-_STALE_COLOR      = QColor("#f59e0b")   # 황색 — 이전 프롬프트로 생성된 요약
-_DEFAULT_COLOR    = QColor("#e2e8f0")   # 기본 텍스트 색
+# ── 자동 확장 텍스트 입력 (ChatTab과 동일 패턴) ──────────────────────────────
 
+class _AutoExpandingEdit(QPlainTextEdit):
+    """Enter 전송, Shift+Enter 줄바꿈. 최대 4줄까지 자동 확장."""
+    returnPressed = pyqtSignal()
+
+    _MIN_HEIGHT = 36
+    _MAX_HEIGHT = 144
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setPlaceholderText("선택한 셀에 대해 질문하세요…")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(self._MIN_HEIGHT)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.document().contentsChanged.connect(self._adjust_height)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        line_h = self.fontMetrics().lineSpacing()
+        if line_h >= 8:
+            margins = self.contentsMargins()
+            v_pad = margins.top() + margins.bottom() + 4
+            self._MIN_HEIGHT = line_h + v_pad
+            self._MAX_HEIGHT = line_h * 4 + v_pad
+            self.setFixedHeight(self._MIN_HEIGHT)
+
+    def _adjust_height(self):
+        doc = self.document()
+        total_lines = 0
+        block = doc.begin()
+        while block.isValid():
+            layout = block.layout()
+            count = layout.lineCount() if layout else 0
+            total_lines += count if count > 0 else 1
+            block = block.next()
+        total_lines = max(1, total_lines)
+
+        line_h = self.fontMetrics().lineSpacing()
+        margins = self.contentsMargins()
+        new_h = line_h * total_lines + margins.top() + margins.bottom() + 4
+        new_h = max(self._MIN_HEIGHT, min(new_h, self._MAX_HEIGHT))
+        self.setFixedHeight(new_h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._adjust_height()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                super().keyPressEvent(event)
+            else:
+                self.returnPressed.emit()
+        else:
+            super().keyPressEvent(event)
+
+
+# ── 색상 상수 ────────────────────────────────────────────────────────────────
+
+_SUMMARIZED_COLOR = QColor("#60a5fa")
+_STALE_COLOR      = QColor("#f59e0b")
+_DEFAULT_COLOR    = QColor("#e2e8f0")
+
+
+# ── 자동 설명 (auto-explain) 상수 ─────────────────────────────────────────────
+
+_AUTO_EXPLAIN_SENTINEL = "__AUTO_EXPLAIN__"
+_AUTO_EXPLAIN_DISPLAY  = "[자동 설명 요청]"
+_AUTO_EXPLAIN_QUESTION = (
+    "선택된 셀들을 학습자가 이해할 수 있도록 한국어로 단계별로 자세히 설명해 주세요. "
+    "코드라면 동작 원리·핵심 개념·사용 예시를, 마크다운이라면 의도와 맥락을 설명해 주세요."
+)
+
+
+# ── NotebookTab ──────────────────────────────────────────────────────────────
 
 class NotebookTab(QWidget):
-    summary_requested = pyqtSignal(dict)   # {name: [cells]}
-    stop_requested    = pyqtSignal()
+    summary_requested        = pyqtSignal(dict)   # {name: [cells]}
+    stop_requested           = pyqtSignal()
+    notebook_chat_requested  = pyqtSignal(str, list, str, str, list)
+    # (question, selected_cells, notebook_name, summary, conversation_history)
+    notebook_chat_stop       = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self._cells: list[dict] = []
-        self._summaries: dict[str, str] = {}   # in-memory cache
-        self._stale_summaries: set[str] = set()  # 이전 프롬프트로 생성된 요약
+        self._summaries: dict[str, str] = {}
+        self._stale_summaries: set[str] = set()
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
         self._summary_font_size = 13
+        self._viewer_font_size = 13
+        self._chat_font_size = 13
         self._summary_page_ready = False
+        self._viewer_page_ready = False
+        self._chat_page_ready = False
+        self._is_streaming = False
+        self._chat_history: list[dict] = []     # [{role, content}]
+        self._pending_chat_question: str = ""   # 요약 자동생성 후 대기 중인 질문
+        self._pending_chat_cells: list[dict] = []
+        self._last_chat_question: str = ""      # 히스토리에 저장할 직전 질문
+        self._context_mode: str = "summary"     # "summary" | "full"
         self._build_ui()
+
+    # ── UI 빌드 ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -148,7 +202,6 @@ class NotebookTab(QWidget):
         left_layout.setContentsMargins(0, 0, 4, 0)
         left_layout.setSpacing(6)
 
-        # 전체선택 체크박스
         self.select_all_cb = QCheckBox("전체선택")
         self.select_all_cb.setStyleSheet(
             "QCheckBox { color: #94a3b8; font-size: 11px; }"
@@ -157,12 +210,10 @@ class NotebookTab(QWidget):
         self.select_all_cb.stateChanged.connect(self._on_select_all)
         left_layout.addWidget(self.select_all_cb)
 
-        # 범례
         legend = QLabel("🔵 요약 완료  🟡 이전 프롬프트")
         legend.setStyleSheet("color: #64748b; font-size: 10px;")
         left_layout.addWidget(legend)
 
-        # 노트북 리스트 (체크박스)
         self.nb_list = QListWidget()
         self.nb_list.setStyleSheet(
             "QListWidget { background: #0d0f14; border: 1px solid #2a3045; "
@@ -175,20 +226,17 @@ class NotebookTab(QWidget):
         self.nb_list.itemChanged.connect(self._on_item_check_changed)
         left_layout.addWidget(self.nb_list)
 
-        # 요약 생성 버튼
         self.generate_btn = QPushButton("📝 요약 생성")
         self.generate_btn.setStyleSheet(_BTN_STYLE)
         self.generate_btn.clicked.connect(self._on_generate_click)
         left_layout.addWidget(self.generate_btn)
 
-        # 프롬프트 편집 버튼
         self.edit_prompt_btn = QPushButton("✏️ 프롬프트 편집")
         self.edit_prompt_btn.setStyleSheet(_BTN_STYLE)
         self.edit_prompt_btn.setToolTip("prompts/summary_prompt.txt를 텍스트 에디터로 엽니다")
         self.edit_prompt_btn.clicked.connect(self._on_edit_prompt)
         left_layout.addWidget(self.edit_prompt_btn)
 
-        # 프로그레스 바 (숨김)
         self.progress_bar = QProgressBar()
         self.progress_bar.setStyleSheet(
             "QProgressBar { background: #1e2330; border: 1px solid #2a3045; "
@@ -199,14 +247,12 @@ class NotebookTab(QWidget):
         self.progress_bar.hide()
         left_layout.addWidget(self.progress_bar)
 
-        # 중지 버튼 (숨김)
         self.stop_btn = QPushButton("⏹️ 중지")
         self.stop_btn.setStyleSheet(_STOP_BTN_STYLE)
         self.stop_btn.clicked.connect(self.stop_requested.emit)
         self.stop_btn.hide()
         left_layout.addWidget(self.stop_btn)
 
-        # 상태 레이블
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #64748b; font-size: 10px;")
         self.status_label.setWordWrap(True)
@@ -214,7 +260,7 @@ class NotebookTab(QWidget):
 
         splitter.addWidget(left_panel)
 
-        # ── 우측 패널: 셀 보기 / 요약 보기 ──────────────────────────────────
+        # ── 우측 패널: 셀+채팅 / 요약 보기 ──────────────────────────────────
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(4, 0, 0, 0)
@@ -235,27 +281,16 @@ class NotebookTab(QWidget):
         toggle_row.addStretch()
         right_layout.addLayout(toggle_row)
 
-        # 스택 위젯 (셀 뷰 / 요약 뷰)
+        # 스택 위젯 (셀+채팅 뷰 / 요약 뷰)
         self.view_stack = QStackedWidget()
 
-        # --- 셀 보기 (기존) ---
-        self.cell_scroll = QScrollArea()
-        self.cell_scroll.setWidgetResizable(True)
-        self.cell_scroll.setStyleSheet(
-            "QScrollArea { border: 1px solid #2a3045; border-radius: 6px; "
-            "background: #0d0f14; }"
-        )
-        self._cell_container = QWidget()
-        self._cell_layout = QVBoxLayout(self._cell_container)
-        self._cell_layout.setContentsMargins(8, 8, 8, 8)
-        self._cell_layout.setSpacing(6)
-        self._cell_layout.addStretch()
-        self.cell_scroll.setWidget(self._cell_container)
-        self.view_stack.addWidget(self.cell_scroll)
+        # --- [0] 셀+채팅 뷰 (QSplitter) ---
+        self._build_cell_chat_view()
+        self.view_stack.addWidget(self._cell_chat_splitter)
 
-        # --- 요약 보기 (QWebEngineView + marked.js) ---
+        # --- [1] 요약 보기 (기존) ---
         self.summary_web = QWebEngineView()
-        self.summary_web.setPage(_SummaryLinkPage(self.summary_web))
+        self.summary_web.setPage(_LinkPage(self.summary_web))
         self.summary_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         if getattr(sys, "frozen", False):
             _base = Path(sys._MEIPASS)
@@ -272,27 +307,131 @@ class NotebookTab(QWidget):
         splitter.setSizes([220, 780])
         layout.addWidget(splitter, 1)
 
-        # 요약 보기 글자 크기 단축키
+        # 단축키
         QShortcut(QKeySequence("Ctrl+="), self).activated.connect(self._zoom_in)
         QShortcut(QKeySequence("Ctrl++"), self).activated.connect(self._zoom_in)
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self._zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self._zoom_reset)
 
-    # ── 줌 (요약 보기 글자 크기) ─────────────────────────────────────────────
+    def _build_cell_chat_view(self):
+        """셀 뷰어 + 채팅 패널 스플리터 생성"""
+        self._cell_chat_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._cell_chat_splitter.setStyleSheet(
+            "QSplitter::handle { background: #2a3045; width: 2px; }"
+        )
 
-    def _zoom_in(self):
-        if self._summary_font_size < 24:
-            self._summary_font_size += 1
-            self._run_summary_js(f"setFontSize({self._summary_font_size})")
+        if getattr(sys, "frozen", False):
+            _base = Path(sys._MEIPASS)
+        else:
+            _base = Path(__file__).parent.parent
 
-    def _zoom_out(self):
-        if self._summary_font_size > 8:
-            self._summary_font_size -= 1
-            self._run_summary_js(f"setFontSize({self._summary_font_size})")
+        # ── 좌측: 노트북 뷰어 (QWebEngineView) ──────────────────────────
+        self.viewer_web = QWebEngineView()
+        self.viewer_web.setPage(_LinkPage(self.viewer_web))
+        self.viewer_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        viewer_html = _base / "resources" / "notebook_viewer.html"
+        self.viewer_web.setUrl(QUrl.fromLocalFile(str(viewer_html.resolve())))
+        self.viewer_web.loadFinished.connect(self._on_viewer_page_loaded)
+        self._cell_chat_splitter.addWidget(self.viewer_web)
 
-    def _zoom_reset(self):
-        self._summary_font_size = 13
-        self._run_summary_js(f"setFontSize({self._summary_font_size})")
+        # ── 우측: 채팅 패널 ─────────────────────────────────────────────
+        chat_panel = QWidget()
+        chat_layout = QVBoxLayout(chat_panel)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(4)
+
+        # 채팅 헤더
+        chat_header = QLabel("💬 셀 Q&A")
+        chat_header.setStyleSheet(
+            "color: #e2e8f0; font-size: 12px; font-weight: 600; "
+            "padding: 4px 8px; background: #111827; "
+            "border: 1px solid #2a3045; border-radius: 6px 6px 0 0;"
+        )
+        chat_layout.addWidget(chat_header)
+
+        # 컨텍스트 모드 토글 (요약 모드 / 전체 모드)
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.setSpacing(4)
+        mode_label = QLabel("컨텍스트:")
+        mode_label.setStyleSheet("color: #94a3b8; font-size: 11px; padding: 0 2px;")
+        self.summary_mode_btn = QPushButton("요약 모드")
+        self.summary_mode_btn.setStyleSheet(_TOGGLE_ACTIVE)
+        self.summary_mode_btn.clicked.connect(lambda: self._set_context_mode("summary"))
+        self.full_mode_btn = QPushButton("전체 모드")
+        self.full_mode_btn.setStyleSheet(_TOGGLE_INACTIVE)
+        self.full_mode_btn.clicked.connect(lambda: self._set_context_mode("full"))
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.summary_mode_btn)
+        mode_row.addWidget(self.full_mode_btn)
+        mode_row.addStretch()
+        chat_layout.addLayout(mode_row)
+
+        # 채팅 디스플레이 (QWebEngineView)
+        self.chat_web = QWebEngineView()
+        self.chat_web.setPage(_LinkPage(self.chat_web))
+        self.chat_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        chat_html = _base / "resources" / "notebook_chat.html"
+        self.chat_web.setUrl(QUrl.fromLocalFile(str(chat_html.resolve())))
+        self.chat_web.loadFinished.connect(self._on_chat_page_loaded)
+        chat_layout.addWidget(self.chat_web, 1)
+
+        # 채팅 상태 레이블
+        self.chat_status = QLabel("")
+        self.chat_status.setStyleSheet("color: #64748b; font-size: 10px; padding: 0 4px;")
+        self.chat_status.hide()
+        chat_layout.addWidget(self.chat_status)
+
+        # 입력 영역
+        input_row = QHBoxLayout()
+        input_row.setSpacing(4)
+
+        self.chat_input = _AutoExpandingEdit()
+        self.chat_input.setStyleSheet(
+            "QPlainTextEdit { background: #111827; color: #e2e8f0; "
+            "border: 1px solid #2a3045; border-radius: 6px; "
+            "padding: 6px 8px; font-size: 12px; "
+            "font-family: 'Pretendard','Malgun Gothic',sans-serif; }"
+            "QPlainTextEdit:focus { border-color: #4f8ef7; }"
+        )
+        self.chat_input.returnPressed.connect(self._on_chat_send)
+        input_row.addWidget(self.chat_input)
+
+        self.send_btn = QPushButton("전송")
+        self.send_btn.setStyleSheet(_SEND_BTN_STYLE)
+        self.send_btn.setFixedWidth(60)
+        self.send_btn.clicked.connect(self._on_chat_send)
+        input_row.addWidget(self.send_btn)
+
+        chat_layout.addLayout(input_row)
+
+        # 채팅 초기화 버튼
+        clear_row = QHBoxLayout()
+        clear_row.addStretch()
+        self.clear_chat_btn = QPushButton("🗑 대화 초기화")
+        self.clear_chat_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #64748b; border: none; "
+            "font-size: 10px; padding: 2px 6px; }"
+            "QPushButton:hover { color: #94a3b8; }"
+        )
+        self.clear_chat_btn.clicked.connect(self._on_clear_chat)
+        clear_row.addWidget(self.clear_chat_btn)
+        chat_layout.addLayout(clear_row)
+
+        self._cell_chat_splitter.addWidget(chat_panel)
+        self._cell_chat_splitter.setSizes([580, 420])
+
+    # ── 페이지 로드 콜백 ─────────────────────────────────────────────────────
+
+    def _on_viewer_page_loaded(self, ok: bool):
+        if ok:
+            self._viewer_page_ready = True
+            if self._current_nb:
+                self._render_notebook(self._current_nb)
+
+    def _on_chat_page_loaded(self, ok: bool):
+        if ok:
+            self._chat_page_ready = True
 
     def _on_summary_page_loaded(self, ok: bool):
         if ok:
@@ -300,9 +439,63 @@ class NotebookTab(QWidget):
             self._run_summary_js(f"setFontSize({self._summary_font_size})")
             self._rebuild_summary_view()
 
+    # ── JS 실행 헬퍼 ─────────────────────────────────────────────────────────
+
+    def _run_viewer_js(self, script: str, callback=None):
+        if self._viewer_page_ready:
+            if callback:
+                self.viewer_web.page().runJavaScript(script, callback)
+            else:
+                self.viewer_web.page().runJavaScript(script)
+
+    def _run_chat_js(self, script: str):
+        if self._chat_page_ready:
+            self.chat_web.page().runJavaScript(script)
+
     def _run_summary_js(self, script: str):
         if self._summary_page_ready:
             self.summary_web.page().runJavaScript(script)
+
+    # ── 줌 ───────────────────────────────────────────────────────────────────
+
+    def _zoom_in(self):
+        idx = self.view_stack.currentIndex()
+        if idx == 0:
+            if self._viewer_font_size < 24:
+                self._viewer_font_size += 1
+                self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
+            if self._chat_font_size < 24:
+                self._chat_font_size += 1
+                self._run_chat_js(f"setFontSize({self._chat_font_size})")
+        else:
+            if self._summary_font_size < 24:
+                self._summary_font_size += 1
+                self._run_summary_js(f"setFontSize({self._summary_font_size})")
+
+    def _zoom_out(self):
+        idx = self.view_stack.currentIndex()
+        if idx == 0:
+            if self._viewer_font_size > 8:
+                self._viewer_font_size -= 1
+                self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
+            if self._chat_font_size > 8:
+                self._chat_font_size -= 1
+                self._run_chat_js(f"setFontSize({self._chat_font_size})")
+        else:
+            if self._summary_font_size > 8:
+                self._summary_font_size -= 1
+                self._run_summary_js(f"setFontSize({self._summary_font_size})")
+
+    def _zoom_reset(self):
+        idx = self.view_stack.currentIndex()
+        if idx == 0:
+            self._viewer_font_size = 13
+            self._chat_font_size = 13
+            self._run_viewer_js("setFontSize(13)")
+            self._run_chat_js("setFontSize(13)")
+        else:
+            self._summary_font_size = 13
+            self._run_summary_js("setFontSize(13)")
 
     # ── 뷰 전환 ──────────────────────────────────────────────────────────────
 
@@ -315,7 +508,19 @@ class NotebookTab(QWidget):
             _TOGGLE_ACTIVE if idx == 1 else _TOGGLE_INACTIVE
         )
 
-    # ── 체크박스 로직 ────────────────────────────────────────────────────────
+    def _set_context_mode(self, mode: str):
+        """채팅 컨텍스트 모드 전환 ('summary' | 'full')."""
+        if mode not in ("summary", "full"):
+            return
+        self._context_mode = mode
+        self.summary_mode_btn.setStyleSheet(
+            _TOGGLE_ACTIVE if mode == "summary" else _TOGGLE_INACTIVE
+        )
+        self.full_mode_btn.setStyleSheet(
+            _TOGGLE_ACTIVE if mode == "full" else _TOGGLE_INACTIVE
+        )
+
+    # ── 체크박스 로직 (좌측 노트북 목록) ─────────────────────────────────────
 
     def _on_select_all(self, state):
         check = Qt.CheckState.Checked if state else Qt.CheckState.Unchecked
@@ -328,7 +533,6 @@ class NotebookTab(QWidget):
     def _on_item_check_changed(self, _item):
         self._update_generate_btn_label()
         self._rebuild_summary_view()
-        # 전체선택 체크박스 동기화
         total = self.nb_list.count()
         checked = sum(
             1 for i in range(total)
@@ -353,7 +557,6 @@ class NotebookTab(QWidget):
 
     def _update_generate_btn_label(self):
         checked = self._get_checked_names()
-        # 캐시 없음 + stale(이전 프롬프트) 모두 재생성 대상
         to_gen = [
             n for n in checked
             if n not in self._summaries or n in self._stale_summaries
@@ -372,14 +575,12 @@ class NotebookTab(QWidget):
         return Path(self._cache_dir) / "summaries.json"
 
     def _get_nb_path(self, notebook_name: str) -> str | None:
-        """cells에서 해당 노트북의 파일 경로를 반환"""
         for c in self._cells:
             if c["notebook"] == notebook_name:
                 return c.get("notebook_path")
         return None
 
     def _load_summary_cache(self):
-        """디스크 캐시에서 유효한 요약을 self._summaries에 로드"""
         cache_path = self._summary_cache_path()
         if not cache_path.exists():
             return
@@ -393,22 +594,19 @@ class NotebookTab(QWidget):
         current_prompt_hash = get_summary_prompt_hash()
         for name, entry in data.items():
             if name in self._summaries:
-                continue  # 이미 인메모리 캐시에 있으면 스킵
+                continue
             nb_path = self._get_nb_path(name)
             if nb_path and os.path.exists(nb_path):
                 current_hash = get_file_md5(nb_path)
                 if entry.get("hash") == current_hash:
                     self._summaries[name] = entry["summary"]
                     if entry.get("prompt_hash") != current_prompt_hash:
-                        # 노트북 파일은 동일하지만 프롬프트가 변경됨 → stale 표시
                         self._stale_summaries.add(name)
 
     def _save_summary_to_cache(self, notebook_name: str, summary: str):
-        """하나의 요약을 디스크 캐시에 저장"""
         os.makedirs(self._cache_dir, exist_ok=True)
         cache_path = self._summary_cache_path()
 
-        # 기존 캐시 로드
         data: dict = {}
         if cache_path.exists():
             try:
@@ -417,7 +615,6 @@ class NotebookTab(QWidget):
             except Exception:
                 data = {}
 
-        # 파일 해시 및 프롬프트 해시 계산
         nb_path = self._get_nb_path(notebook_name)
         file_hash = ""
         if nb_path and os.path.exists(nb_path):
@@ -452,7 +649,6 @@ class NotebookTab(QWidget):
         for i in range(self.nb_list.count()):
             item = self.nb_list.item(i)
             if item.text() == notebook_name:
-                # stale이면 황색, 아니면 파란색
                 if notebook_name in self._stale_summaries:
                     item.setForeground(_STALE_COLOR)
                 else:
@@ -466,6 +662,8 @@ class NotebookTab(QWidget):
         if nb and nb != self._current_nb:
             self._current_nb = nb
             self._render_notebook(nb)
+            # 노트북 전환 시 채팅 초기화
+            self._on_clear_chat()
 
     # ── 요약 생성 ────────────────────────────────────────────────────────────
 
@@ -478,7 +676,6 @@ class NotebookTab(QWidget):
 
     def _on_generate_click(self):
         checked = self._get_checked_names()
-        # 캐시에 없거나 stale(이전 프롬프트)인 노트북 요약 요청
         to_generate = {}
         for name in checked:
             if name not in self._summaries or name in self._stale_summaries:
@@ -489,7 +686,6 @@ class NotebookTab(QWidget):
                 to_generate[name] = nb_cells
 
         if not to_generate:
-            # 모두 캐시됨 → 바로 요약 보기 표시
             self._rebuild_summary_view()
             self._switch_view(1)
             return
@@ -504,22 +700,153 @@ class NotebookTab(QWidget):
 
         self.summary_requested.emit(to_generate)
 
+    # ── 셀 채팅 ──────────────────────────────────────────────────────────────
+
+    def _on_chat_send(self):
+        if self._is_streaming:
+            return
+        raw = self.chat_input.toPlainText().strip()
+        # 빈 입력이면 자동 설명 모드 sentinel 사용
+        question = raw if raw else _AUTO_EXPLAIN_SENTINEL
+
+        # 선택된 셀 가져오기 (비동기 JS 콜백)
+        self._run_viewer_js("getSelectedCells()", lambda result: self._on_cells_selected(result, question))
+
+    def _on_cells_selected(self, result, question: str):
+        """viewer JS에서 선택된 셀 데이터를 받은 후 처리"""
+        try:
+            selected = json.loads(result) if isinstance(result, str) else result
+        except (json.JSONDecodeError, TypeError):
+            selected = []
+
+        nb_name = self._current_nb
+        summary = self._summaries.get(nb_name, "")
+
+        # 자동 설명 모드 판별: 화면에는 마커만, LLM에는 확장된 지시문
+        is_auto = (question == _AUTO_EXPLAIN_SENTINEL)
+        display_q = _AUTO_EXPLAIN_DISPLAY if is_auto else question
+        llm_q     = _AUTO_EXPLAIN_QUESTION if is_auto else question
+
+        # 채팅 UI에 사용자 메시지 표시
+        if selected:
+            cell_indices = [c.get("cell_idx", "?") for c in selected]
+            ctx_text = f"선택된 셀: {', '.join(f'#{i}' for i in cell_indices)} ({nb_name})"
+        elif self._context_mode == "full":
+            ctx_text = f"전체 노트북 질문 ({nb_name})"
+        else:
+            ctx_text = f"요약 기반 질문 ({nb_name})"
+        escaped_ctx = json.dumps(ctx_text)
+        self._run_chat_js(f"showSelectedContext({escaped_ctx})")
+
+        escaped_q = json.dumps(display_q)
+        self._run_chat_js(f"appendUserMessage({escaped_q})")
+
+        self.chat_input.clear()
+
+        # 요약 모드에서 요약이 없으면 자동 생성 후 채팅
+        # (전체 모드는 요약 불필요 → 바로 채팅)
+        if self._context_mode == "summary" and not summary:
+            self._pending_chat_question = llm_q
+            self._pending_chat_cells = selected
+            self._run_chat_js('showStatus("⏳ 노트북 요약 생성 중...")')
+            self._auto_generate_summary(nb_name)
+            return
+
+        self._start_chat_request(llm_q, selected, nb_name, summary)
+
+    def _auto_generate_summary(self, nb_name: str):
+        """채팅을 위해 요약을 자동 생성 (단일 노트북)"""
+        nb_cells = sorted(
+            [c for c in self._cells if c["notebook"] == nb_name],
+            key=lambda x: x["cell_idx"]
+        )
+        self.summary_requested.emit({nb_name: nb_cells})
+
+    def _start_chat_request(self, question: str, selected_cells: list[dict],
+                            nb_name: str, summary: str):
+        """채팅 요청 시그널 emit"""
+        self._is_streaming = True
+        self._last_chat_question = question
+        self._update_chat_btn_streaming()
+
+        self.notebook_chat_requested.emit(
+            question, selected_cells, nb_name, summary,
+            self._chat_history[-6:]  # 최근 3턴 (6 메시지)
+        )
+
+    def _update_chat_btn_streaming(self):
+        """전송 버튼 → 중지 버튼으로 전환"""
+        self.send_btn.setText("⏹")
+        self.send_btn.setStyleSheet(_CHAT_STOP_BTN_STYLE)
+        self.send_btn.clicked.disconnect()
+        self.send_btn.clicked.connect(self._on_chat_stop)
+        self.chat_input.setEnabled(False)
+
+    def _restore_chat_btn(self):
+        """중지 버튼 → 전송 버튼으로 복원"""
+        self._is_streaming = False
+        self.send_btn.setText("전송")
+        self.send_btn.setStyleSheet(_SEND_BTN_STYLE)
+        try:
+            self.send_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self.send_btn.clicked.connect(self._on_chat_send)
+        self.chat_input.setEnabled(True)
+        self.chat_input.setFocus()
+
+    def _on_chat_stop(self):
+        """채팅 스트리밍 중지"""
+        self.notebook_chat_stop.emit()
+
+    def _on_clear_chat(self):
+        """채팅 초기화"""
+        self._chat_history.clear()
+        self._last_chat_question = ""
+        self._run_chat_js("clearChat()")
+        self._restore_chat_btn()
+
+    # ── 채팅 스트리밍 콜백 (MainWindow에서 호출) ──────────────────────────────
+
+    def on_chat_streaming_start(self):
+        """스트리밍 시작"""
+        self._run_chat_js("removeStatus()")
+        self._run_chat_js("startAiMessage()")
+
+    def on_chat_chunk(self, chunk: str):
+        """스트리밍 토큰 수신"""
+        self._run_chat_js(f"streamingBuffer += {json.dumps(chunk)}; renderStreamingBuffer();")
+
+    def on_chat_finished(self, answer: str):
+        """스트리밍 완료"""
+        self._run_chat_js("finishAiMessage()")
+        self._restore_chat_btn()
+
+        # 대화 기록에 추가
+        if self._last_chat_question:
+            self._chat_history.append({"role": "user", "content": self._last_chat_question})
+            self._last_chat_question = ""
+        self._chat_history.append({"role": "assistant", "content": answer})
+
+    def on_chat_error(self, msg: str):
+        """채팅 에러"""
+        escaped = json.dumps(f"❌ {msg}")
+        self._run_chat_js(f"showStatus({escaped})")
+        self._restore_chat_btn()
+
     # ── 공개 API ──────────────────────────────────────────────────────────────
 
     def load_cells(self, cells: list[dict]):
         self._cells = cells
 
-        # 기존 요약 중 아직 존재하는 노트북만 보존
         new_nbs = sorted(set(c["notebook"] for c in cells))
         self._summaries = {
             k: v for k, v in self._summaries.items() if k in new_nbs
         }
         self._stale_summaries = {k for k in self._stale_summaries if k in new_nbs}
 
-        # 디스크 캐시에서 유효한 요약 로드
         self._load_summary_cache()
 
-        # 체크박스 리스트 재구성
         self.nb_list.blockSignals(True)
         self.nb_list.clear()
         for nb in new_nbs:
@@ -536,23 +863,30 @@ class NotebookTab(QWidget):
         self._update_all_indicators()
         self._update_generate_btn_label()
 
-        # 첫 번째 노트북 셀 표시
         if new_nbs:
             self._current_nb = new_nbs[0]
             self.nb_list.setCurrentRow(0)
             self._render_notebook(new_nbs[0])
 
-        # 요약 뷰 재구성
         self._rebuild_summary_view()
 
     def set_summary(self, notebook_name: str, summary: str):
         """워커에서 호출: 하나의 노트북 요약 결과를 캐시 + 표시"""
         self._summaries[notebook_name] = summary
-        self._stale_summaries.discard(notebook_name)  # 새 요약이므로 stale 해제
+        self._stale_summaries.discard(notebook_name)
         self._save_summary_to_cache(notebook_name, summary)
         self._update_item_indicator(notebook_name)
         self._rebuild_summary_view()
         self._update_generate_btn_label()
+
+        # 대기 중인 채팅 질문이 있으면 이제 처리
+        if (self._pending_chat_question
+                and notebook_name == self._current_nb):
+            question = self._pending_chat_question
+            cells = self._pending_chat_cells
+            self._pending_chat_question = ""
+            self._pending_chat_cells = []
+            self._start_chat_request(question, cells, notebook_name, summary)
 
     def update_progress(self, processed: int, total: int):
         self.progress_bar.setValue(processed)
@@ -564,7 +898,9 @@ class NotebookTab(QWidget):
         self.progress_bar.hide()
         self.stop_btn.hide()
         self.status_label.setText("✅ 요약 생성 완료")
-        self._switch_view(1)
+        # 대기 중인 채팅이 없을 때만 요약 보기로 전환
+        if not self._pending_chat_question:
+            self._switch_view(1)
 
     def on_error(self, msg: str):
         self.generate_btn.setEnabled(True)
@@ -572,27 +908,22 @@ class NotebookTab(QWidget):
         self.stop_btn.hide()
         self.status_label.setText(f"❌ {msg}")
 
-    # ── 셀 렌더링 (기존) ─────────────────────────────────────────────────────
+    # ── 셀 렌더링 (QWebEngineView) ───────────────────────────────────────────
 
     def _render_notebook(self, nb_name: str):
-        # 기존 셀 위젯 제거
-        while self._cell_layout.count() > 1:
-            item = self._cell_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
         nb_cells = sorted(
             [c for c in self._cells if c["notebook"] == nb_name],
             key=lambda x: x["cell_idx"]
         )
-        for cell in nb_cells:
-            widget = CellWidget(cell)
-            self._cell_layout.insertWidget(self._cell_layout.count() - 1, widget)
+        cells_json = json.dumps([
+            {"cell_idx": c["cell_idx"], "cell_type": c["cell_type"], "source": c["source"]}
+            for c in nb_cells
+        ], ensure_ascii=False)
+        self._run_viewer_js(f"loadCells({cells_json})")
 
     # ── 요약 뷰 렌더링 ───────────────────────────────────────────────────────
 
     def _rebuild_summary_view(self):
-        """체크된 노트북의 캐시된 요약을 요약 뷰에 표시"""
         if not self._summary_page_ready:
             return
 

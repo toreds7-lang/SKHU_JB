@@ -319,6 +319,51 @@ class SuggestedQueriesWorker(QThread):
             self.finished_signal.emit([])
 
 
+class NotebookChatWorker(QThread):
+    """노트북 셀 기반 Q&A 채팅 (RAG 미사용, 직접 LLM 호출)"""
+    chunk_received  = pyqtSignal(str)
+    finished_signal = pyqtSignal(str)      # full answer
+    error_signal    = pyqtSignal(str)
+
+    def __init__(self, llm, system_prompt: str, user_prompt: str,
+                 conversation_history: list[dict] | None = None):
+        super().__init__()
+        self.llm               = llm
+        self.system_prompt     = system_prompt
+        self.user_prompt       = user_prompt
+        self.conversation_history = conversation_history or []
+        self._stopped          = False
+
+    def stop(self):
+        self._stopped = True
+
+    def _build_history_messages(self) -> list:
+        msgs = []
+        for m in self.conversation_history:
+            if m["role"] == "user":
+                msgs.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                msgs.append(AIMessage(content=m["content"]))
+        return msgs
+
+    def run(self):
+        try:
+            messages = (
+                [SystemMessage(content=self.system_prompt)]
+                + self._build_history_messages()
+                + [HumanMessage(content=self.user_prompt)]
+            )
+            buf = ""
+            for chunk in self.llm.stream(messages):
+                if self._stopped:
+                    break
+                buf += chunk.content
+                self.chunk_received.emit(chunk.content)
+            self.finished_signal.emit(buf)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+
 class SummaryWorker(QThread):
     """노트북별 LLM 요약 생성 (백그라운드)"""
     progress_signal  = pyqtSignal(int, int)    # (processed, total)

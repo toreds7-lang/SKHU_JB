@@ -923,3 +923,73 @@ def prepare_notebook_summary_prompt(
         f"--- 셀 내용 ---\n{cell_text}\n\n"
         f"위 노트북의 내용을 분석하여 핵심 요약을 작성해 주세요."
     )
+
+
+# ── 노트북 채팅 (Notebook Chat) ──────────────────────────────────────────────
+
+
+def load_notebook_chat_prompt() -> str:
+    """notebook_chat_prompt.txt에서 노트북 채팅 시스템 프롬프트를 로드합니다."""
+    _fp = Path("prompts/notebook_chat_prompt.txt")
+    if _fp.exists():
+        return _fp.read_text(encoding="utf-8").strip()
+    return (
+        "당신은 Jupyter Notebook 코드 분석 전문가이자 프로그래밍 튜터입니다.\n\n"
+        "사용자가 선택한 노트북 셀의 내용과 노트북 요약을 바탕으로 질문에 답변합니다.\n\n"
+        "답변 방식:\n"
+        "- 선택된 셀의 코드/마크다운 내용을 정확하게 분석합니다\n"
+        "- 코드 설명 시 단계별로 명확하게 설명합니다\n"
+        "- 필요 시 개선된 코드 예시를 제공합니다\n"
+        "- 노트북 요약 컨텍스트를 활용하여 전체 맥락에서 답변합니다\n\n"
+        "규칙:\n"
+        "1. 주어진 셀 내용과 요약만을 근거로 답변합니다\n"
+        "2. 답변은 한국어로 작성합니다\n"
+        "3. 마크다운 형식을 사용합니다"
+    )
+
+
+def prepare_notebook_chat_prompt(
+    notebook_name: str,
+    selected_cells: list[dict],
+    question: str,
+    *,
+    context_mode: str = "summary",
+    summary: str = "",
+    all_cells: list[dict] | None = None,
+) -> str:
+    """노트북 채팅용 사용자 프롬프트를 생성합니다.
+
+    context_mode: "summary" → 요약 + 선택된 셀
+                  "full"    → 노트북 전체 셀(선택된 셀에 [★ 선택됨] 마커)
+    """
+    parts = [f"노트북: {notebook_name}"]
+
+    use_full = context_mode == "full" and all_cells
+
+    if use_full:
+        selected_idx = {c.get("cell_idx") for c in selected_cells}
+        parts.append("\n--- 노트북 전체 내용 ---")
+        for c in sorted(all_cells, key=lambda x: x.get("cell_idx", 0)):
+            tag = "CODE" if c.get("cell_type") == "code" else "MARKDOWN"
+            idx = c.get("cell_idx", "?")
+            src = c.get("source", "")
+            marker = "[★ 선택됨] " if idx in selected_idx else ""
+            parts.append(f"{marker}[{tag} #{idx}]\n{src}")
+
+        if selected_cells:
+            sel_list = ", ".join(f"#{c.get('cell_idx', '?')}" for c in selected_cells)
+            parts.append(f"\n--- 사용자가 질문하는 셀 ---\n선택된 셀 번호: {sel_list}")
+    else:
+        if summary:
+            parts.append(f"\n--- 노트북 요약 ---\n{summary}")
+
+        if selected_cells:
+            parts.append("\n--- 선택된 셀 ---")
+            for c in selected_cells:
+                tag = "CODE" if c.get("cell_type") == "code" else "MARKDOWN"
+                src = c.get("source", "")
+                parts.append(f"[{tag} #{c.get('cell_idx', '?')}]\n{src}")
+
+    parts.append(f"\n--- 질문 ---\n{question}")
+
+    return "\n".join(parts)
