@@ -581,6 +581,16 @@ function deselectAll() {
 function setFontSize(px) {
   document.body.style.fontSize = px + 'px';
 }
+
+function scrollToCell(cellIdx) {
+  var cells = document.querySelectorAll('.nb-cell');
+  for (var i = 0; i < cells.length; i++) {
+    if (parseInt(cells[i].getAttribute('data-idx')) === cellIdx) {
+      cells[i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+  }
+}
 </script>
 </body>
 </html>

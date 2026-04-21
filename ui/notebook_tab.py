@@ -13,8 +13,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QFrame, QSizePolicy,
-    QPushButton, QProgressBar, QSplitter, QStackedWidget, QCheckBox,
-    QPlainTextEdit, QApplication,
+    QPushButton, QProgressBar, QSplitter, QSplitterHandle, QStackedWidget, QCheckBox,
+    QPlainTextEdit, QApplication, QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut, QDesktopServices
@@ -55,6 +55,78 @@ _TOGGLE_INACTIVE = (
     "border-radius: 4px; padding: 4px 12px; font-size: 11px; }"
     "QPushButton:hover { color: #94a3b8; border-color: #475569; }"
 )
+_OUTLINE_TREE_STYLE = (
+    "QTreeWidget { background: #0d0f14; border: none; color: #d4d4d4; "
+    "font-size: 12px; outline: 0; }"
+    "QTreeWidget::item { padding: 3px 4px; border-radius: 3px; }"
+    "QTreeWidget::item:selected { background: #1e3a5f; color: #93c5fd; }"
+    "QTreeWidget::item:hover:!selected { background: #161922; }"
+    "QTreeWidget::branch { background: #0d0f14; }"
+)
+
+
+# ── 접이식 스플리터 ───────────────────────────────────────────────────────────
+
+class _CollapseHandle(QSplitterHandle):
+    """스플리터 핸들 중앙에 ◀/▶ 버튼을 넣어 한 번 클릭으로 패널을 접고 펼친다."""
+
+    def __init__(self, orientation, parent, collapse_index: int = 1):
+        super().__init__(orientation, parent)
+        self._collapse_index = collapse_index
+        self._saved_sizes: list[int] | None = None
+
+        arrow = "▶" if collapse_index == 1 else "◀"
+        self._btn = QPushButton(arrow, self)
+        self._btn.setFixedSize(16, 40)
+        self._btn.setStyleSheet(
+            "QPushButton { background: #374151; color: #9ca3af; border: none; "
+            "border-radius: 3px; font-size: 9px; padding: 0; }"
+            "QPushButton:hover { background: #4b5563; color: #e2e8f0; }"
+        )
+        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.clicked.connect(self._toggle)
+        self.splitter().splitterMoved.connect(self._sync_arrow)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._btn.move((self.width() - 16) // 2, (self.height() - 40) // 2)
+
+    def _sync_arrow(self):
+        sizes = self.splitter().sizes()
+        collapsed = sizes[self._collapse_index] == 0
+        if self._collapse_index == 1:
+            self._btn.setText("◀" if collapsed else "▶")
+        else:
+            self._btn.setText("▶" if collapsed else "◀")
+
+    def _toggle(self):
+        splitter = self.splitter()
+        sizes = splitter.sizes()
+        total = sum(sizes)
+        if sizes[self._collapse_index] == 0:
+            restored = self._saved_sizes or (
+                [total * 22 // 100, total * 78 // 100]
+                if self._collapse_index == 0
+                else [total * 58 // 100, total * 42 // 100]
+            )
+            splitter.setSizes(restored)
+        else:
+            self._saved_sizes = list(sizes)
+            new = [0, total] if self._collapse_index == 0 else [total, 0]
+            splitter.setSizes(new)
+        self._sync_arrow()
+
+
+class _CollapsibleSplitter(QSplitter):
+    """버튼으로 한 패널을 접을 수 있는 QSplitter."""
+
+    def __init__(self, orientation, collapse_index: int = 1, parent=None):
+        super().__init__(orientation, parent)
+        self._collapse_index = collapse_index
+        self.setHandleWidth(16)
+
+    def createHandle(self):
+        return _CollapseHandle(self.orientation(), self, self._collapse_index)
 
 
 # ── QWebEnginePage: 외부 링크 + 클립보드 ──────────────────────────────────────
@@ -191,9 +263,9 @@ class NotebookTab(QWidget):
         layout.addWidget(title)
 
         # ── 메인 스플리터 (좌: 목록 | 우: 콘텐츠) ────────────────────────────
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=0)
         splitter.setStyleSheet(
-            "QSplitter::handle { background: #2a3045; width: 1px; }"
+            "QSplitter::handle { background: #2a3045; }"
         )
 
         # ── 좌측 패널: 체크박스 목록 + 요약 버튼 ────────────────────────────
@@ -268,27 +340,36 @@ class NotebookTab(QWidget):
 
         # 뷰 전환 버튼
         toggle_row = QHBoxLayout()
+        self.outline_view_btn = QPushButton("아웃라인")
+        self.outline_view_btn.setStyleSheet(_TOGGLE_ACTIVE)
+        self.outline_view_btn.clicked.connect(lambda: self._switch_view(0))
+
         self.cell_view_btn = QPushButton("셀 보기")
-        self.cell_view_btn.setStyleSheet(_TOGGLE_ACTIVE)
-        self.cell_view_btn.clicked.connect(lambda: self._switch_view(0))
+        self.cell_view_btn.setStyleSheet(_TOGGLE_INACTIVE)
+        self.cell_view_btn.clicked.connect(lambda: self._switch_view(1))
 
         self.summary_view_btn = QPushButton("요약 보기")
         self.summary_view_btn.setStyleSheet(_TOGGLE_INACTIVE)
-        self.summary_view_btn.clicked.connect(lambda: self._switch_view(1))
+        self.summary_view_btn.clicked.connect(lambda: self._switch_view(2))
 
+        toggle_row.addWidget(self.outline_view_btn)
         toggle_row.addWidget(self.cell_view_btn)
         toggle_row.addWidget(self.summary_view_btn)
         toggle_row.addStretch()
         right_layout.addLayout(toggle_row)
 
-        # 스택 위젯 (셀+채팅 뷰 / 요약 뷰)
+        # 스택 위젯 (아웃라인 뷰 / 셀+채팅 뷰 / 요약 뷰)
         self.view_stack = QStackedWidget()
 
-        # --- [0] 셀+채팅 뷰 (QSplitter) ---
+        # --- [0] 아웃라인 뷰 ---
+        self._build_outline_view()
+        self.view_stack.addWidget(self.outline_tree)
+
+        # --- [1] 셀+채팅 뷰 (QSplitter) ---
         self._build_cell_chat_view()
         self.view_stack.addWidget(self._cell_chat_splitter)
 
-        # --- [1] 요약 보기 (기존) ---
+        # --- [2] 요약 보기 (기존) ---
         self.summary_web = QWebEngineView()
         self.summary_web.setPage(_LinkPage(self.summary_web))
         self.summary_web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
@@ -313,11 +394,75 @@ class NotebookTab(QWidget):
         QShortcut(QKeySequence("Ctrl+-"), self).activated.connect(self._zoom_out)
         QShortcut(QKeySequence("Ctrl+0"), self).activated.connect(self._zoom_reset)
 
+    def _build_outline_view(self):
+        """아웃라인 트리 위젯 생성"""
+        self.outline_tree = QTreeWidget()
+        self.outline_tree.setHeaderHidden(True)
+        self.outline_tree.setIndentation(16)
+        self.outline_tree.setStyleSheet(_OUTLINE_TREE_STYLE)
+        self.outline_tree.itemClicked.connect(self._on_outline_item_clicked)
+        placeholder = QTreeWidgetItem(["노트북을 선택하세요."])
+        placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+        self.outline_tree.addTopLevelItem(placeholder)
+
+    def _render_outline(self, nb_name: str):
+        """마크다운 셀에서 헤더를 파싱해 아웃라인 트리를 구성"""
+        import re
+        self.outline_tree.clear()
+        nb_cells = sorted(
+            [c for c in self._cells if c["notebook"] == nb_name],
+            key=lambda x: x["cell_idx"]
+        )
+        header_re = re.compile(r'^(#{1,6})\s+(.+)', re.MULTILINE)
+        # (level, QTreeWidgetItem) 스택으로 계층 추적
+        stack: list[tuple[int, QTreeWidgetItem]] = []
+
+        level_colors = {1: "#93c5fd", 2: "#c4b5fd", 3: "#86efac",
+                        4: "#fde68a", 5: "#fca5a5", 6: "#94a3b8"}
+
+        for cell in nb_cells:
+            if cell["cell_type"] != "markdown":
+                continue
+            for m in header_re.finditer(cell["source"]):
+                level = len(m.group(1))
+                text = m.group(2).strip()
+                prefix = "#" * level + " "
+                item = QTreeWidgetItem([prefix + text])
+                item.setData(0, Qt.ItemDataRole.UserRole, cell["cell_idx"])
+                item.setToolTip(0, text)
+                color = level_colors.get(level, "#94a3b8")
+                item.setForeground(0, QColor(color))
+
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+
+                if stack:
+                    stack[-1][1].addChild(item)
+                else:
+                    self.outline_tree.addTopLevelItem(item)
+
+                stack.append((level, item))
+
+        self.outline_tree.expandAll()
+
+        if self.outline_tree.topLevelItemCount() == 0:
+            placeholder = QTreeWidgetItem(["(마크다운 헤더 없음)"])
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.outline_tree.addTopLevelItem(placeholder)
+
+    def _on_outline_item_clicked(self, item: QTreeWidgetItem, col: int):
+        """아웃라인 항목 클릭 → 셀 보기로 전환 후 해당 셀로 스크롤"""
+        cell_idx = item.data(0, Qt.ItemDataRole.UserRole)
+        if cell_idx is None:
+            return
+        self._switch_view(1)
+        self._run_viewer_js(f"scrollToCell({cell_idx})")
+
     def _build_cell_chat_view(self):
         """셀 뷰어 + 채팅 패널 스플리터 생성"""
-        self._cell_chat_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._cell_chat_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=1)
         self._cell_chat_splitter.setStyleSheet(
-            "QSplitter::handle { background: #2a3045; width: 2px; }"
+            "QSplitter::handle { background: #2a3045; }"
         )
 
         if getattr(sys, "frozen", False):
@@ -460,40 +605,40 @@ class NotebookTab(QWidget):
 
     def _zoom_in(self):
         idx = self.view_stack.currentIndex()
-        if idx == 0:
+        if idx == 1:
             if self._viewer_font_size < 24:
                 self._viewer_font_size += 1
                 self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
             if self._chat_font_size < 24:
                 self._chat_font_size += 1
                 self._run_chat_js(f"setFontSize({self._chat_font_size})")
-        else:
+        elif idx == 2:
             if self._summary_font_size < 24:
                 self._summary_font_size += 1
                 self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_out(self):
         idx = self.view_stack.currentIndex()
-        if idx == 0:
+        if idx == 1:
             if self._viewer_font_size > 8:
                 self._viewer_font_size -= 1
                 self._run_viewer_js(f"setFontSize({self._viewer_font_size})")
             if self._chat_font_size > 8:
                 self._chat_font_size -= 1
                 self._run_chat_js(f"setFontSize({self._chat_font_size})")
-        else:
+        elif idx == 2:
             if self._summary_font_size > 8:
                 self._summary_font_size -= 1
                 self._run_summary_js(f"setFontSize({self._summary_font_size})")
 
     def _zoom_reset(self):
         idx = self.view_stack.currentIndex()
-        if idx == 0:
+        if idx == 1:
             self._viewer_font_size = 13
             self._chat_font_size = 13
             self._run_viewer_js("setFontSize(13)")
             self._run_chat_js("setFontSize(13)")
-        else:
+        elif idx == 2:
             self._summary_font_size = 13
             self._run_summary_js("setFontSize(13)")
 
@@ -501,11 +646,14 @@ class NotebookTab(QWidget):
 
     def _switch_view(self, idx: int):
         self.view_stack.setCurrentIndex(idx)
-        self.cell_view_btn.setStyleSheet(
+        self.outline_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 0 else _TOGGLE_INACTIVE
         )
-        self.summary_view_btn.setStyleSheet(
+        self.cell_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 1 else _TOGGLE_INACTIVE
+        )
+        self.summary_view_btn.setStyleSheet(
+            _TOGGLE_ACTIVE if idx == 2 else _TOGGLE_INACTIVE
         )
 
     def _set_context_mode(self, mode: str):
@@ -661,7 +809,9 @@ class NotebookTab(QWidget):
         nb = item.text()
         if nb and nb != self._current_nb:
             self._current_nb = nb
+            self._render_outline(nb)
             self._render_notebook(nb)
+            self._switch_view(0)
             # 노트북 전환 시 채팅 초기화
             self._on_clear_chat()
 
@@ -687,7 +837,7 @@ class NotebookTab(QWidget):
 
         if not to_generate:
             self._rebuild_summary_view()
-            self._switch_view(1)
+            self._switch_view(2)
             return
 
         self.generate_btn.setEnabled(False)
@@ -866,7 +1016,9 @@ class NotebookTab(QWidget):
         if new_nbs:
             self._current_nb = new_nbs[0]
             self.nb_list.setCurrentRow(0)
+            self._render_outline(new_nbs[0])
             self._render_notebook(new_nbs[0])
+            self._switch_view(0)
 
         self._rebuild_summary_view()
 
@@ -900,7 +1052,7 @@ class NotebookTab(QWidget):
         self.status_label.setText("✅ 요약 생성 완료")
         # 대기 중인 채팅이 없을 때만 요약 보기로 전환
         if not self._pending_chat_question:
-            self._switch_view(1)
+            self._switch_view(2)
 
     def on_error(self, msg: str):
         self.generate_btn.setEnabled(True)

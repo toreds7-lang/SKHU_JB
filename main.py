@@ -4,8 +4,31 @@ SKHU Agent V1.0 - PyQt6 데스크탑 앱 진입점
 
 import os
 import sys
+import subprocess
 import traceback
 from pathlib import Path
+
+
+def _maybe_relaunch_with_pythonw():
+    """콘솔 python.exe로 실행됐을 때 pythonw.exe로 재실행하여 터미널을 해방."""
+    if sys.platform != "win32":
+        return
+    if getattr(sys, "frozen", False):
+        return
+    exe = sys.executable
+    if "pythonw" in exe.lower():
+        return
+    pythonw = exe.replace("python.exe", "pythonw.exe")
+    if not os.path.exists(pythonw):
+        return
+    subprocess.Popen(
+        [pythonw] + sys.argv,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    sys.exit(0)
+
+
+_maybe_relaunch_with_pythonw()
 
 
 def _get_log_path():
