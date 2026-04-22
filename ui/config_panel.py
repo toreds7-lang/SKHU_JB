@@ -110,6 +110,7 @@ class ConfigPanel(QWidget):
         browse_btn.clicked.connect(self._browse_dir)
         dir_row.addWidget(browse_btn)
         lay.addLayout(dir_row)
+        self.nb_dir_edit.textChanged.connect(self._sync_cache_dir)
 
         # ── LLM 설정 ──────────────────────────────────────────────────────────
         lay.addWidget(_SectionLabel("🤖  LLM 설정"))
@@ -242,6 +243,14 @@ class ConfigPanel(QWidget):
                                                 self.nb_dir_edit.text())
         if path:
             self.nb_dir_edit.setText(path)
+
+    def _sync_cache_dir(self, nb_dir_text: str):
+        text = nb_dir_text.strip().rstrip("/\\")
+        if text:
+            parent = os.path.dirname(text)
+            self.cache_dir_edit.setText(
+                os.path.join(parent, ".rag_cache") if parent else ".rag_cache"
+            )
 
     def _on_build_clicked(self):
         cfg = self.get_config()
