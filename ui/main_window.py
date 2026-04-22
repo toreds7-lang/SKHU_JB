@@ -104,6 +104,9 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
 
+        self.tab_widget.tabBar().setTabVisible(2, False)  # 문서 탐색
+        self.tab_widget.tabBar().setTabVisible(3, False)  # 그래프 탐색
+
         splitter.addWidget(self.tab_widget)
         splitter.setSizes([260, 1140])
         main_layout.addWidget(splitter)
