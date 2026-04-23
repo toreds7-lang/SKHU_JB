@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QTextBrowser, QScrollArea, QGroupBox,
-    QFrame, QSizePolicy, QApplication, QProgressBar
+    QFrame, QSizePolicy, QApplication, QProgressBar, QSplitter, QSplitterHandle, QListWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -131,6 +131,71 @@ def _doc_card(doc, tag_class: str, tag_name: str) -> str:
     )
 
 
+# ── 접이식 스플리터 ───────────────────────────────────────────────────────────
+
+class _CollapseHandle(QSplitterHandle):
+    """스플리터 핸들 중앙에 ◀/▶ 버튼을 넣어 한 번 클릭으로 패널을 접고 펼친다."""
+
+    def __init__(self, orientation, parent, collapse_index: int = 1):
+        super().__init__(orientation, parent)
+        self._collapse_index = collapse_index
+        self._saved_sizes: list[int] | None = None
+
+        arrow = "▶" if collapse_index == 1 else "◀"
+        self._btn = QPushButton(arrow, self)
+        self._btn.setFixedSize(12, 40)
+        self._btn.setStyleSheet(
+            "QPushButton { background: #374151; color: #9ca3af; border: none; "
+            "border-radius: 3px; font-size: 9px; padding: 0; }"
+            "QPushButton:hover { background: #4b5563; color: #e2e8f0; }"
+        )
+        self._btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn.clicked.connect(self._toggle)
+        self.splitter().splitterMoved.connect(self._sync_arrow)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._btn.move((self.width() - self._btn.width()) // 2, (self.height() - 40) // 2)
+
+    def _sync_arrow(self):
+        sizes = self.splitter().sizes()
+        collapsed = sizes[self._collapse_index] == 0
+        if self._collapse_index == 1:
+            self._btn.setText("◀" if collapsed else "▶")
+        else:
+            self._btn.setText("▶" if collapsed else "◀")
+
+    def _toggle(self):
+        splitter = self.splitter()
+        sizes = splitter.sizes()
+        total = sum(sizes)
+        if sizes[self._collapse_index] == 0:
+            restored = self._saved_sizes or (
+                [total * 22 // 100, total * 78 // 100]
+                if self._collapse_index == 0
+                else [total * 58 // 100, total * 42 // 100]
+            )
+            splitter.setSizes(restored)
+        else:
+            self._saved_sizes = list(sizes)
+            new = [0, total] if self._collapse_index == 0 else [total, 0]
+            splitter.setSizes(new)
+        self._sync_arrow()
+
+
+class _CollapsibleSplitter(QSplitter):
+    """버튼으로 한 패널을 접을 수 있는 QSplitter."""
+
+    def __init__(self, orientation, collapse_index: int = 1, parent=None):
+        super().__init__(orientation, parent)
+        self._collapse_index = collapse_index
+        self.setHandleWidth(20)
+
+    def createHandle(self):
+        return _CollapseHandle(self.orientation(), self, self._collapse_index)
+
+
 class ChatTab(QWidget):
     query_submitted = pyqtSignal(str, bool)   # (query, is_suggested)
     force_stop_requested = pyqtSignal()       # Force Mode 중지 요청
@@ -144,6 +209,14 @@ class ChatTab(QWidget):
         self._page_loaded   = False
         self._pending_js: list[str] = []
         self._build_ui()
+
+    # ── 노트북 목록 ───────────────────────────────────────────────────────────
+
+    def load_notebooks(self, nb_names: list[str]):
+        """RAG 구축 완료 후 노트북 이름 목록을 채팅 탭 좌측에 채움. 패널은 ▶ 버튼으로 직접 펼침."""
+        self._nb_list.clear()
+        for name in nb_names:
+            self._nb_list.addItem(name)
 
     # ── JS 브릿지 헬퍼 ──────────────────────────────────────────────────────
 
@@ -178,18 +251,60 @@ class ChatTab(QWidget):
     # ── UI 구성 ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 8, 12, 8)
+        outer.setSpacing(6)
+
+        if getattr(sys, "frozen", False):
+            _base = Path(sys._MEIPASS)
+        else:
+            _base = Path(__file__).parent.parent
+
+        # ── 좌우 스플리터 ──────────────────────────────────────────────────────
+        self._viewer_splitter = _CollapsibleSplitter(Qt.Orientation.Horizontal, collapse_index=0)
+        self._viewer_splitter.setStyleSheet(
+            "QSplitter::handle { background: #2a3045; }"
+            "QSplitter::handle:hover { background: #3a4055; }"
+        )
+
+        # ── 좌측: 노트북 목록 패널 (기본 숨김, ▶ 버튼으로 펼침) ────────────────
+        self._nb_panel = QWidget()
+        nb_layout = QVBoxLayout(self._nb_panel)
+        nb_layout.setContentsMargins(0, 0, 4, 0)
+        nb_layout.setSpacing(4)
+        nb_header = QLabel("📓 노트북 목록")
+        nb_header.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; font-weight: 600; padding: 4px 0;"
+        )
+        nb_layout.addWidget(nb_header)
+        self._nb_list = QListWidget()
+        self._nb_list.setStyleSheet(
+            "QListWidget { background: #0d0f14; border: 1px solid #2a3045; "
+            "border-radius: 4px; color: #e2e8f0; font-size: 11px; outline: 0; }"
+            "QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #1a2030; }"
+            "QListWidget::item:hover { background: #1a2030; }"
+        )
+        self._nb_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._nb_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        nb_layout.addWidget(self._nb_list, stretch=1)
+        self._viewer_splitter.addWidget(self._nb_panel)
+
+        # ── 우측: 기존 채팅 레이아웃 ───────────────────────────────────────────
+        right_widget = QWidget()
+        layout = QVBoxLayout(right_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+
+        self._viewer_splitter.addWidget(right_widget)
+        self._viewer_splitter.setStretchFactor(0, 0)
+        self._viewer_splitter.setStretchFactor(1, 1)
+        self._viewer_splitter.setSizes([0, 1])  # 초기: 노트북 목록 패널 숨김
+        outer.addWidget(self._viewer_splitter)
 
         # ── 채팅 히스토리 (QWebEngineView) ────────────────────────────────────
         self.chat_display = QWebEngineView()
         self.chat_display.setPage(_ExternalLinkPage(self.chat_display))
         self.chat_display.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
-        if getattr(sys, "frozen", False):
-            _base = Path(sys._MEIPASS)
-        else:
-            _base = Path(__file__).parent.parent
         html_path = _base / "resources" / "chat.html"
         self.chat_display.setUrl(QUrl.fromLocalFile(str(html_path.resolve())))
         self.chat_display.loadFinished.connect(self._on_page_loaded)

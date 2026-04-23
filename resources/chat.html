@@ -404,10 +404,7 @@ function renderMermaid(root) {
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
   if (!nodes.length) return;
   nodes.forEach(function(el) {
-    var code = el.innerHTML
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>');
+    var code = el.textContent;
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
     mermaid.render(id, code).then(function(result) {
       el.innerHTML = result.svg;

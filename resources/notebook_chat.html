@@ -7,6 +7,7 @@
 <script src="js/marked.min.js"></script>
 <script src="js/highlight.min.js"></script>
 <script src="js/katex.min.js"></script>
+<script src="js/mermaid.min.js"></script>
 <style>
 /* ── Reset & Base ──────────────────────────────────────────── */
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -182,6 +183,24 @@ body {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ── Mermaid diagrams ─────────────────────────────────────── */
+.mermaid-wrapper {
+  background: #111827;
+  border: 1px solid #2a3045;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-wrapper svg { max-width: 100%; height: auto; }
+.mermaid-error {
+  color: #f87171;
+  font-size: 11px;
+  font-family: "JetBrains Mono", Consolas, monospace;
+  padding: 4px;
+}
+
 /* ── Placeholder ──────────────────────────────────────────── */
 .placeholder {
   color: #64748b; font-size: 12px; text-align: center; padding: 40px 20px;
@@ -198,6 +217,17 @@ body {
 </div>
 
 <script>
+// ── Mermaid 초기화 ────────────────────────────────────────────
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    securityLevel: 'loose',
+    fontFamily: '"Pretendard","Malgun Gothic",sans-serif',
+    fontSize: 13
+  });
+}
+
 // ── KaTeX math extension ─────────────────────────────────────
 function _katexRender(text, displayMode) {
   if (!window.katex) return null;
@@ -229,6 +259,23 @@ var mathExtension = {
   ]
 };
 marked.use(mathExtension);
+
+// ── Mermaid code fence 인터셉트 ───────────────────────────────
+var mermaidExtension = {
+  renderer: {
+    code(token) {
+      if (token.lang === 'mermaid') {
+        var escaped = (token.text || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        return '<div class="mermaid-wrapper"><div class="mermaid">' + escaped + '</div></div>';
+      }
+      return false;
+    }
+  }
+};
+marked.use(mermaidExtension);
 
 marked.setOptions({
   highlight: function(code, lang) {
@@ -315,6 +362,24 @@ function addMsgActions(bubbleDiv, rawMarkdown) {
   label.appendChild(actions);
 }
 
+// ── Mermaid 다이어그램 렌더링 ─────────────────────────────────
+function renderMermaid(root) {
+  if (!window.mermaid) return;
+  var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
+  if (!nodes.length) return;
+  nodes.forEach(function(el) {
+    var code = el.textContent;
+    var id = 'mermaid-' + Math.random().toString(36).slice(2);
+    mermaid.render(id, code).then(function(result) {
+      el.innerHTML = result.svg;
+      el.setAttribute('data-processed', 'true');
+    }).catch(function(err) {
+      el.innerHTML = '<div class="mermaid-error">⚠ Mermaid 오류: ' + (err.message || err) + '</div>';
+      el.setAttribute('data-processed', 'true');
+    });
+  });
+}
+
 // ── Public API ───────────────────────────────────────────────
 
 function showSelectedContext(cellsInfo) {
@@ -393,6 +458,7 @@ function finishAiMessage() {
     hljs.highlightElement(el);
   });
   addCopyButtons(currentAiBubble);
+  renderMermaid(currentAiBubble);
   if (bubbleDiv) addMsgActions(bubbleDiv, rawMd);
   currentAiBubble.removeAttribute('id');
   currentAiBubble = null;
@@ -413,6 +479,7 @@ function appendFinishedAiMessage(text) {
     hljs.highlightElement(el);
   });
   addCopyButtons(msg);
+  renderMermaid(msg);
   var bubbleDiv = msg.querySelector('.bubble-ai');
   if (bubbleDiv) addMsgActions(bubbleDiv, text);
   scrollToBottom(true);

@@ -349,7 +349,7 @@ function renderMermaid(root) {
   if (!window.mermaid) return;
   var nodes = root.querySelectorAll('.mermaid:not([data-processed])');
   nodes.forEach(function(el) {
-    var code = el.innerHTML.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+    var code = el.textContent;
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
     mermaid.render(id, code).then(function(result) {
       el.innerHTML = result.svg;

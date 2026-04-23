@@ -98,8 +98,8 @@ class MainWindow(QMainWindow):
         self.notebook_tab = NotebookTab()
         self.dir_tab      = DirTab()
 
-        self.tab_widget.addTab(self.chat_tab,     "💬  채팅")
         self.tab_widget.addTab(self.notebook_tab, "📓  노트북 뷰어")
+        self.tab_widget.addTab(self.chat_tab,     "💬  채팅")
         self.tab_widget.addTab(self.docs_tab,     "📄  문서 탐색")
         self.tab_widget.addTab(self.graph_tab,    "🕸️  그래프 탐색")
         self.tab_widget.addTab(self.dir_tab,      "📁  디렉토리")
@@ -194,6 +194,8 @@ class MainWindow(QMainWindow):
         self.notebook_tab.set_cache_dir(cfg["cache_dir"])
         self.notebook_tab.load_cells(rag_sys["cells"])
         self.dir_tab.load_tree(cfg["nb_dir"], rag_sys["cells"])
+        nb_names = sorted({c["notebook"] for c in rag_sys["cells"]})
+        self.chat_tab.load_notebooks(nb_names)
 
         self.statusBar().showMessage(
             f"✅ 준비 완료 — 노트북 {rag_sys['nb_count']}개, 셀 {rag_sys['cell_count']}개 인덱싱"
