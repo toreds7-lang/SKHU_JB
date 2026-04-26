@@ -366,8 +366,8 @@ class NotebookChatWorker(QThread):
 
 class SummaryWorker(QThread):
     """노트북별 LLM 요약 생성 (백그라운드)"""
-    progress_signal  = pyqtSignal(int, int)    # (processed, total)
-    summary_signal   = pyqtSignal(str, str)    # (notebook_name, summary_text)
+    progress_signal  = pyqtSignal(int, int)         # (processed, total)
+    summary_signal   = pyqtSignal(str, str, str)    # (notebook_name, summary_text, prompt_hash)
     finished_signal  = pyqtSignal()
     error_signal     = pyqtSignal(str)
 
@@ -383,9 +383,9 @@ class SummaryWorker(QThread):
 
     def run(self):
         try:
+            import hashlib
             from rag_core import load_summary_prompt, prepare_notebook_summary_prompt
 
-            sys_prompt = load_summary_prompt()
             names = list(self.notebooks.keys())
             total = len(names)
 
@@ -393,6 +393,10 @@ class SummaryWorker(QThread):
                 if self._stopped:
                     self.finished_signal.emit()
                     return
+
+                # 매 노트북 직전에 프롬프트 파일을 다시 읽어 핫 리로드 지원
+                sys_prompt = load_summary_prompt()
+                prompt_hash = hashlib.md5(sys_prompt.encode()).hexdigest()
 
                 try:
                     prompt = prepare_notebook_summary_prompt(
@@ -402,9 +406,9 @@ class SummaryWorker(QThread):
                         SystemMessage(content=sys_prompt),
                         HumanMessage(content=prompt),
                     ])
-                    self.summary_signal.emit(name, response.content.strip())
+                    self.summary_signal.emit(name, response.content.strip(), prompt_hash)
                 except Exception as e:
-                    self.summary_signal.emit(name, f"❌ 요약 생성 실패: {e}")
+                    self.summary_signal.emit(name, f"❌ 요약 생성 실패: {e}", prompt_hash)
 
                 self.progress_signal.emit(i + 1, total)
 

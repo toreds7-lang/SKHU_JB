@@ -241,8 +241,30 @@ if (window.mermaid) {
     theme: 'dark',
     securityLevel: 'loose',
     fontFamily: '"Pretendard","Malgun Gothic",sans-serif',
-    fontSize: 13
+    fontSize: 13,
+    suppressErrorRendering: true
   });
+
+  // 폭탄 아이콘이 들어간 error SVG를 DOM 어디에서든 자동 제거
+  function _isMermaidErrorSvg(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node.tagName !== 'svg' && node.tagName !== 'SVG') return false;
+    var html = node.outerHTML || '';
+    return html.indexOf('Syntax error') !== -1 ||
+           html.indexOf('aria-roledescription="error"') !== -1;
+  }
+  var _mermaidObserver = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (_isMermaidErrorSvg(node)) {
+          var wrapper = node.closest && node.closest('.mermaid-wrapper');
+          if (wrapper) wrapper.style.display = 'none';
+          else node.remove();
+        }
+      });
+    });
+  });
+  _mermaidObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 // ── KaTeX 수학 확장 (marked.js 플러그인) ─────────────────────
@@ -406,12 +428,36 @@ function renderMermaid(root) {
   nodes.forEach(function(el) {
     var code = el.textContent;
     var id = 'mermaid-' + Math.random().toString(36).slice(2);
-    mermaid.render(id, code).then(function(result) {
+    el.setAttribute('data-processed', 'true');
+
+    function hideWrapper() {
+      var wrapper = el.closest('.mermaid-wrapper');
+      if (wrapper) wrapper.style.display = 'none';
+    }
+
+    var parsePromise;
+    try {
+      parsePromise = mermaid.parse(code, { suppressErrors: true });
+    } catch (e) {
+      hideWrapper();
+      return;
+    }
+    Promise.resolve(parsePromise).then(function(parseResult) {
+      if (parseResult === false || parseResult === null || parseResult === undefined) {
+        hideWrapper();
+        return null;
+      }
+      return mermaid.render(id, code);
+    }).then(function(result) {
+      if (!result || !result.svg) return;
+      if (result.svg.indexOf('Syntax error') !== -1 ||
+          result.svg.indexOf('aria-roledescription="error"') !== -1) {
+        hideWrapper();
+        return;
+      }
       el.innerHTML = result.svg;
-      el.setAttribute('data-processed', 'true');
     }).catch(function(err) {
-      el.innerHTML = '<div class="mermaid-error">⚠ Mermaid 오류: ' + (err.message || err) + '</div>';
-      el.setAttribute('data-processed', 'true');
+      hideWrapper();
     });
   });
 }

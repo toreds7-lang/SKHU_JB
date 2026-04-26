@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QSplitter, QSplitterHandle, QStackedWidget, QCheckBox,
     QPlainTextEdit, QApplication, QTreeWidget, QTreeWidgetItem,
 )
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QFileSystemWatcher
 from PyQt6.QtGui import QFont, QColor, QKeySequence, QShortcut, QDesktopServices
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage
@@ -234,6 +234,7 @@ class NotebookTab(QWidget):
         super().__init__()
         self._cells: list[dict] = []
         self._summaries: dict[str, str] = {}
+        self._summary_prompt_hashes: dict[str, str] = {}  # name → 해당 요약 생성에 쓰인 프롬프트 md5
         self._stale_summaries: set[str] = set()
         self._cache_dir: str = ".rag_cache"
         self._current_nb: str = ""
@@ -241,6 +242,7 @@ class NotebookTab(QWidget):
         self._viewer_font_size = 13
         self._chat_font_size = 13
         self._summary_page_ready = False
+        self._summary_view_dirty = False
         self._viewer_page_ready = False
         self._chat_page_ready = False
         self._is_streaming = False
@@ -250,6 +252,7 @@ class NotebookTab(QWidget):
         self._last_chat_question: str = ""      # 히스토리에 저장할 직전 질문
         self._context_mode: str = "summary"     # "summary" | "full"
         self._build_ui()
+        self._setup_prompt_watcher()
 
     # ── UI 빌드 ──────────────────────────────────────────────────────────────
 
@@ -655,6 +658,8 @@ class NotebookTab(QWidget):
         self.summary_view_btn.setStyleSheet(
             _TOGGLE_ACTIVE if idx == 2 else _TOGGLE_INACTIVE
         )
+        if idx == 2 and self._summary_page_ready and self._summary_view_dirty:
+            self._rebuild_summary_view()
 
     def _set_context_mode(self, mode: str):
         """채팅 컨텍스트 모드 전환 ('summary' | 'full')."""
@@ -677,6 +682,7 @@ class NotebookTab(QWidget):
             self.nb_list.item(i).setCheckState(check)
         self.nb_list.blockSignals(False)
         self._update_generate_btn_label()
+        self._rebuild_summary_view()
 
     def _on_item_check_changed(self, _item):
         self._update_generate_btn_label()
@@ -748,10 +754,12 @@ class NotebookTab(QWidget):
                 current_hash = get_file_md5(nb_path)
                 if entry.get("hash") == current_hash:
                     self._summaries[name] = entry["summary"]
-                    if entry.get("prompt_hash") != current_prompt_hash:
+                    entry_prompt_hash = entry.get("prompt_hash", "")
+                    self._summary_prompt_hashes[name] = entry_prompt_hash
+                    if entry_prompt_hash != current_prompt_hash:
                         self._stale_summaries.add(name)
 
-    def _save_summary_to_cache(self, notebook_name: str, summary: str):
+    def _save_summary_to_cache(self, notebook_name: str, summary: str, prompt_hash: str):
         os.makedirs(self._cache_dir, exist_ok=True)
         cache_path = self._summary_cache_path()
 
@@ -766,19 +774,43 @@ class NotebookTab(QWidget):
         nb_path = self._get_nb_path(notebook_name)
         file_hash = ""
         if nb_path and os.path.exists(nb_path):
-            from rag_core import get_file_md5, get_summary_prompt_hash
+            from rag_core import get_file_md5
             file_hash = get_file_md5(nb_path)
-        else:
-            from rag_core import get_summary_prompt_hash
 
         data[notebook_name] = {
             "hash": file_hash,
-            "prompt_hash": get_summary_prompt_hash(),
+            "prompt_hash": prompt_hash,
             "summary": summary,
         }
 
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # ── 프롬프트 파일 감시 (핫 리로드 + stale 재평가) ──────────────────────────
+
+    _SUMMARY_PROMPT_PATH = "prompts/summary_prompt.txt"
+
+    def _setup_prompt_watcher(self):
+        """prompts/summary_prompt.txt 변경을 감시해 기존 요약들을 stale로 즉시 전환."""
+        self._prompt_watcher = QFileSystemWatcher(self)
+        if os.path.exists(self._SUMMARY_PROMPT_PATH):
+            self._prompt_watcher.addPath(self._SUMMARY_PROMPT_PATH)
+        self._prompt_watcher.fileChanged.connect(self._on_summary_prompt_changed)
+
+    def _on_summary_prompt_changed(self, path: str):
+        from rag_core import get_summary_prompt_hash
+        current = get_summary_prompt_hash()
+        for name in list(self._summaries.keys()):
+            if self._summary_prompt_hashes.get(name, "") != current:
+                self._stale_summaries.add(name)
+            else:
+                self._stale_summaries.discard(name)
+        self._update_all_indicators()
+        self._rebuild_summary_view()
+
+        # atomic-rename 저장(VS Code 등) 시 watcher에서 경로가 탈락하므로 재등록
+        if os.path.exists(path) and path not in self._prompt_watcher.files():
+            self._prompt_watcher.addPath(path)
 
     # ── 시각적 표시 (요약 완료 색상) ──────────────────────────────────────────
 
@@ -1022,11 +1054,16 @@ class NotebookTab(QWidget):
 
         self._rebuild_summary_view()
 
-    def set_summary(self, notebook_name: str, summary: str):
-        """워커에서 호출: 하나의 노트북 요약 결과를 캐시 + 표시"""
+    def set_summary(self, notebook_name: str, summary: str, prompt_hash: str = ""):
+        """워커에서 호출: 하나의 노트북 요약 결과를 캐시 + 표시
+
+        prompt_hash: 이 요약 생성 시점에 사용된 프롬프트의 MD5. 런타임 프롬프트 변경
+        감지(QFileSystemWatcher)가 stale 판정에 사용한다.
+        """
         self._summaries[notebook_name] = summary
+        self._summary_prompt_hashes[notebook_name] = prompt_hash
         self._stale_summaries.discard(notebook_name)
-        self._save_summary_to_cache(notebook_name, summary)
+        self._save_summary_to_cache(notebook_name, summary, prompt_hash)
         self._update_item_indicator(notebook_name)
         self._rebuild_summary_view()
         self._update_generate_btn_label()
@@ -1077,7 +1114,9 @@ class NotebookTab(QWidget):
 
     def _rebuild_summary_view(self):
         if not self._summary_page_ready:
+            self._summary_view_dirty = True
             return
+        self._summary_view_dirty = False
 
         self._run_summary_js("clearCards()")
 
